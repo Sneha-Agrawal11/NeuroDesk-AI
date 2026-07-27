@@ -79,8 +79,9 @@ export class SearchController {
       } else if (mode === 'keyword') {
         finalFileIds = ftsResults.map(r => r.file_id);
       } else if (mode === 'semantic') {
-        finalFileIds = semanticResults.map(r => r.metadata.file_id).filter(Boolean);
+        finalFileIds = semanticResults.map(r => r.metadata?.file_id).filter(Boolean);
       }
+      finalFileIds = [...new Set(finalFileIds)];
 
       // 4. Hydrate Results from DB
       if (finalFileIds.length === 0) {
@@ -102,7 +103,7 @@ export class SearchController {
         const semanticMatch = semanticResults.find(r => r.metadata.file_id === file?.id);
         return {
           ...file,
-          snippet: semanticMatch ? semanticMatch.content : file?.extractedText?.substring(0, 200) + '...'
+          snippet: semanticMatch ? semanticMatch.content : (file?.extractedText ? `${file.extractedText.substring(0, 200)}...` : '')
         };
       });
 

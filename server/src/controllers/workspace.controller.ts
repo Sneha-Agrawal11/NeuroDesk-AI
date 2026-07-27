@@ -7,8 +7,11 @@ import { AuthRequest } from '../middleware/auth';
 import { logger } from '../utils/logger';
 import { scanQueue } from '../workers/queue';
 import { indexQueue } from '../workers/queue';
+import axios from 'axios';
+import { config } from '../config';
 
 const prisma = new PrismaClient();
+const AI_SERVICE_URL = config.ai.serviceUrl;
 
 export class WorkspaceController {
 
@@ -155,7 +158,7 @@ export class WorkspaceController {
 
   static async getDocumentAnalysis(req: AuthRequest, res: Response) {
     try {
-      const fileId = req.params.id;
+      const fileId = String(req.params.id);
       const fileRecord = await prisma.fileRecord.findUnique({
         where: { id: fileId }
       });
@@ -164,23 +167,30 @@ export class WorkspaceController {
         return res.status(404).json({ success: false, error: 'Document not found' });
       }
 
-      // Read file content
-      const fs = require('fs');
-      if (!fs.existsSync(fileRecord.path)) {
-        return res.status(404).json({ success: false, error: 'File on disk not found' });
+      if (!fileRecord.extractedText) {
+        return res.status(409).json({ success: false, error: 'Document is still being indexed or has no extractable text' });
       }
-      
-      const content = fs.readFileSync(fileRecord.path, 'utf8');
+
+      const cacheKey = `analysis:${fileRecord.id}:${fileRecord.contentHash || fileRecord.indexedAt?.getTime() || 'current'}`;
+      const cached = await prisma.aICache.findUnique({ where: { cacheKey } });
+      if (cached) {
+        return res.json({ success: true, data: JSON.parse(cached.value) });
+      }
 
       // Call AI service for deep analysis
-      const axios = require('axios');
-      const response = await axios.post(`http://localhost:8000/internal/ml/deep_analyze`, {
-        content: content,
+      const response = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {
+        content: fileRecord.extractedText,
         category: fileRecord.aiCategory || fileRecord.category,
         filename: fileRecord.filename
       });
 
       if (response.data && response.data.success) {
+        await prisma.aICache.upsert({
+          where: { cacheKey },
+          update: { value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' },
+          create: { cacheType: 'analysis', cacheKey, value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' }
+        });
+        await prisma.fileRecord.update({ where: { id: fileRecord.id }, data: { lastAnalyzedAt: new Date() } });
         return res.json({ success: true, data: response.data.analysis });
       }
 
@@ -194,37 +204,48 @@ export class WorkspaceController {
 
   static async getProjectAnalysis(req: AuthRequest, res: Response) {
     try {
-      const projectId = req.params.id;
+      const projectId = String(req.params.id);
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        include: { FileRecord: { select: { path: true, filename: true, category: true, sizeBytes: true } } }
+        include: { files: { select: { path: true, filename: true, category: true, extension: true, extractedText: true } } }
       });
 
       if (!project) {
         return res.status(404).json({ success: false, error: 'Project not found' });
       }
 
-      // Collect some context to send to AI
-      const fileList = project.FileRecord.map(f => `${f.path}`).join('\n');
-      
-      const fs = require('fs');
-      let readmeContent = '';
-      const readmeFile = project.FileRecord.find(f => f.filename.toLowerCase() === 'readme.md');
-      if (readmeFile && fs.existsSync(readmeFile.path)) {
-        readmeContent = fs.readFileSync(readmeFile.path, 'utf8');
-      }
+      const cacheKey = `project-analysis:${project.id}:${project.analyzedAt?.getTime() || project.files.map(file => file.path).join('|')}`;
+      const cached = await prisma.aICache.findUnique({ where: { cacheKey } });
+      if (cached) return res.json({ success: true, data: JSON.parse(cached.value) });
 
-      const contentToAnalyze = `Project Name: ${project.name}\nProject Path: ${project.path}\nFiles:\n${fileList.substring(0, 5000)}\n\nREADME:\n${readmeContent.substring(0, 10000)}`;
+      // Analyze representative extracted content from the complete indexed project,
+      // rather than privileging README content.
+      const fileInventory = project.files.map(file => `${file.path} [${file.category}]`).join('\n');
+      const sourceContext = project.files
+        .filter(file => file.extractedText)
+        .sort((a, b) => (b.extractedText?.length || 0) - (a.extractedText?.length || 0))
+        .map(file => `\n--- ${file.path} (${file.category}) ---\n${file.extractedText}`)
+        .join('')
+        .slice(0, 60000);
+      const contentToAnalyze = `Project Name: ${project.name}\nProject Path: ${project.path}\n\nComplete File Inventory:\n${fileInventory}\n\nIndexed Project Content:${sourceContext}`;
 
       // Call AI service
-      const axios = require('axios');
-      const response = await axios.post(`http://localhost:8000/internal/ml/deep_analyze`, {
+      const response = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {
         content: contentToAnalyze,
         category: 'project',
         filename: project.name
       });
 
       if (response.data && response.data.success) {
+        await prisma.$transaction([
+          prisma.aICache.upsert({
+            where: { cacheKey },
+            update: { value: JSON.stringify(response.data.analysis), contentHash: cacheKey },
+            create: { cacheType: 'analysis', cacheKey, value: JSON.stringify(response.data.analysis), contentHash: cacheKey }
+          }),
+          prisma.projectAnalysis.create({ data: { projectId: project.id, analysisType: 'full', result: JSON.stringify(response.data.analysis) } }),
+          prisma.project.update({ where: { id: project.id }, data: { analyzedAt: new Date() } })
+        ]);
         return res.json({ success: true, data: response.data.analysis });
       }
 
@@ -278,7 +299,7 @@ export class WorkspaceController {
             filename: file.originalname,
             extension: ext,
             mimeType,
-            category: ext === '.pdf' || ext === '.txt' || ext === '.md' ? 'document' : 'document',
+            category: categoryForUpload(ext),
             sizeBytes: BigInt(file.size),
             fileModifiedAt: new Date(),
             status: 'discovered',
@@ -316,4 +337,11 @@ export class WorkspaceController {
     }
   }
 }
-    
+
+function categoryForUpload(ext: string): string {
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff'].includes(ext)) return 'image';
+  if (['.ppt', '.pptx', '.key'].includes(ext)) return 'presentation';
+  if (['.csv', '.tsv', '.xls', '.xlsx'].includes(ext)) return 'spreadsheet';
+  if (['.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.c', '.cpp', '.cs', '.go', '.rs', '.html', '.css'].includes(ext)) return 'code';
+  return 'document';
+}

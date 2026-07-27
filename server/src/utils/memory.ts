@@ -37,7 +37,7 @@ export class WorkspaceMemory {
         where: { userId }
       });
       
-      let parsedPrefs = {};
+      const parsedPrefs: Record<string, unknown> = {};
       prefs.forEach(p => {
         try {
           parsedPrefs[p.key] = JSON.parse(p.value);

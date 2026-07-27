@@ -54,15 +54,17 @@ export const searchFts = async (query: string, limit: number = 20) => {
   try {
     await ensureFtsReady();
 
-    // Basic FTS match
-    // Note: User input should be sanitized to avoid malformed MATCH queries
-    const safeQuery = query.replace(/["']/g, ''); 
+    // FTS MATCH syntax is not natural-language syntax. Convert user input into
+    // individual prefix terms so punctuation and phrases cannot break the query.
+    const terms = query.match(/[\p{L}\p{N}_-]+/gu) || [];
+    if (!terms.length) return [];
+    const safeQuery = terms.map(term => `"${term.replace(/"/g, '')}"*`).join(' OR ');
     const results = await prisma.$queryRawUnsafe<any[]>(
       `SELECT file_id, filename, category, bm25(file_search) AS rank 
        FROM file_search 
        WHERE file_search MATCH ? 
        ORDER BY rank LIMIT ?`,
-      `"${safeQuery}"* OR ${safeQuery}`, limit
+      safeQuery, limit
     );
     
     return results;
