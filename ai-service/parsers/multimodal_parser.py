@@ -35,15 +35,17 @@ class MultimodalParser(FileParser):
                 return self._parse_docx(file_path)
             elif ext == 'pptx':
                 return self._parse_pptx(file_path)
-            elif ext == 'xlsx' or ext == 'csv':
+            elif ext in ['xlsx', 'xls']:
                 return self._parse_excel(file_path)
+            elif ext in ['csv', 'tsv']:
+                return self._parse_delimited(file_path, '\t' if ext == 'tsv' else ',')
             elif ext in ['txt', 'md', 'ts', 'tsx', 'js', 'jsx', 'json', 'yml', 'yaml', 'html', 'css', 'c', 'cpp', 'java', 'xml']:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     return f.read()
             else:
-                return f"Unsupported file type for deep parsing: {ext}"
+                raise ValueError(f"Unsupported file type: {ext}")
         except Exception as e:
-            return f"Error parsing {file_path}: {str(e)}"
+            raise RuntimeError(f"Unable to parse {os.path.basename(file_path)}: {e}") from e
 
     def _parse_image(self, file_path: str) -> str:
         text = ""
@@ -127,3 +129,11 @@ class MultimodalParser(FileParser):
                 row_str = " | ".join([str(c) if c is not None else "" for c in row])
                 text += row_str + "\n"
         return text
+
+    def _parse_delimited(self, file_path: str, delimiter: str) -> str:
+        import csv
+        rows = []
+        with open(file_path, 'r', encoding='utf-8-sig', errors='replace', newline='') as source:
+            for row in csv.reader(source, delimiter=delimiter):
+                rows.append(' | '.join(cell.strip() for cell in row))
+        return '\n'.join(rows)

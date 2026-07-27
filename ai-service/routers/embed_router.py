@@ -37,3 +37,11 @@ async def semantic_search(req: SearchRequest, service: EmbeddingService = Depend
         return {"success": True, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/file/{file_id}")
+async def delete_file_embeddings(file_id: str, service: EmbeddingService = Depends(get_embedding_service)):
+    try:
+        service.delete_file(file_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

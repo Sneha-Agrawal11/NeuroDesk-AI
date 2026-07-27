@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from ml.analyzer import MLAnalyzer
-from providers.gemini_provider import GeminiProvider
+from providers import get_ai_provider
 import json
 
 router = APIRouter(prefix="/internal/ml", tags=["ml"])
@@ -49,9 +49,9 @@ class DeepAnalyzeRequest(BaseModel):
 @router.post("/deep_analyze")
 async def deep_analyze_document(req: DeepAnalyzeRequest):
     try:
-        gemini = GeminiProvider()
-        if not gemini.is_available():
-            return {"success": False, "error": "Gemini not available"}
+        provider = get_ai_provider()
+        if provider.get_name() == "local":
+            return {"success": False, "error": "No AI provider is configured for deep analysis"}
 
         prompts = {
             "resume": "Extract the following from this resume as a pure JSON object (do not use markdown blocks): {\"summary\": \"\", \"atsScore\": 85, \"education\": [\"\"], \"skills\": [\"\"], \"experience\": [\"\"], \"projects\": [\"\"], \"achievements\": [\"\"], \"strengths\": [\"\"], \"missingSkills\": [\"\"], \"interviewQuestions\": [\"\"], \"improvements\": [\"\"]}",
@@ -67,7 +67,7 @@ async def deep_analyze_document(req: DeepAnalyzeRequest):
         
         full_prompt = f"{prompt}\n\nDocument Text:\n{req.content[:15000]}"
         
-        response_text = await gemini.generate(full_prompt)
+        response_text = await provider.generate(full_prompt)
         
         # Parse JSON from response
         try:
