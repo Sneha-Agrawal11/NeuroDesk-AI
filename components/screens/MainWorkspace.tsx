@@ -6,7 +6,7 @@ import { Search, Sparkles, Settings, LogOut, Mic, Paperclip, Send, X, Brain, Fil
 import { Button } from '@/components/ui/button'
 import ProjectWorkspace from './ProjectWorkspace'
 import WorkspacePermission from './WorkspacePermission'
-import { clearSession, getProjects, getDocuments, searchWorkspace, streamChat, triggerWorkspaceScan, uploadFiles, type ProjectSummary, type DocumentSummary } from '@/lib/api'
+import { clearSession, getProjects, getDocuments, getStoredSession, searchWorkspace, streamChat, triggerWorkspaceScan, uploadFiles, type ProjectSummary, type DocumentSummary } from '@/lib/api'
 import DocumentWorkspace from './DocumentWorkspace'
 
 type ChatMessage = { role: 'user' | 'assistant'; text: string }
@@ -174,11 +174,11 @@ function SettingsDrawer({ isOpen, onClose, onPermissions, onLogout, onRescan }: 
                 <div className="space-y-2">
                   <div className="p-3 rounded-lg bg-white/5">
                     <p className="text-xs text-white/50">User</p>
-                    <p className="text-sm text-white font-medium">Sneha Agrawal</p>
+                    <p className="text-sm text-white font-medium">{getStoredSession()?.user.name || getStoredSession()?.user.email || 'Signed in user'}</p>
                   </div>
                   <div className="p-3 rounded-lg bg-white/5">
                     <p className="text-xs text-white/50">Workspace</p>
-                    <p className="text-sm text-white font-medium">/Users/sneha/NeuroDesk</p>
+                    <p className="text-sm text-white font-medium">Your indexed workspace</p>
                   </div>
                 </div>
               </div>
@@ -290,7 +290,7 @@ export default function MainWorkspace() {
          
          if (typeof streamChat === 'function') {
            const chatResult = await streamChat(text, nextHistory.map((m: any) => ({ role: m.role, content: m.text })))
-           setMessages(prev => [...prev, { role: 'assistant', text: chatResult?.text || 'AI Response Received.' }])
+           setMessages(prev => [...prev, { role: 'assistant', text: chatResult?.text || 'This information is unavailable in the indexed workspace.' }])
          }
          setShowAI(true)
       }
@@ -320,10 +320,12 @@ export default function MainWorkspace() {
       }))
 
       setUploadedDocs(prev => [...newDocs, ...prev])
-      setUploadToast({ type: 'success', message: `Uploaded ${files.length} file(s)!` })
+      const refreshedDocuments = await getDocuments()
+      setDocuments(refreshedDocuments)
+      setUploadToast({ type: 'success', message: `${files.length} file(s) queued for analysis.` })
       setTimeout(() => setUploadToast(null), 3000)
     } catch (error) {
-      setUploadToast({ type: 'error', message: 'Upload completed.' })
+      setUploadToast({ type: 'error', message: error instanceof Error ? error.message : 'Upload failed.' })
       setTimeout(() => setUploadToast(null), 3000)
     } finally {
       setUploading(false)

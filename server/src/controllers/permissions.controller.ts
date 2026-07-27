@@ -34,7 +34,7 @@ export class PermissionsController {
   static async togglePermission(req: AuthRequest, res: Response) {
     try {
       const userId = req.user!.userId;
-      const permissionId = req.params.id;
+      const permissionId = String(req.params.id);
       const { enabled } = req.body;
       
       const permission = await prisma.permission.findUnique({
@@ -101,7 +101,7 @@ export class PermissionsController {
   static async removePermission(req: AuthRequest, res: Response) {
     try {
       const userId = req.user!.userId;
-      const permissionId = req.params.id;
+      const permissionId = String(req.params.id);
       
       const permission = await prisma.permission.findUnique({
         where: { id: permissionId },

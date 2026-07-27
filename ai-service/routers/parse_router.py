@@ -26,6 +26,8 @@ async def parse_file(req: ParseRequest) -> ParseResponse:
         text = parser.parse(req.file_path)
         chunks = parser.chunk_text(text)
             
+        if not text.strip():
+            raise ValueError("No extractable text was found in this file")
         return ParseResponse(success=True, text=text, chunks=chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

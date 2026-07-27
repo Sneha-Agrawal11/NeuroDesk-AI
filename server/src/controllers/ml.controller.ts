@@ -12,7 +12,7 @@ export class MLController {
   
   static async getProjectAnalytics(req: AuthRequest, res: Response) {
     try {
-      const { projectId } = req.params;
+      const projectId = String(req.params.projectId);
       
       const project = await prisma.project.findUnique({
         where: { id: projectId },
