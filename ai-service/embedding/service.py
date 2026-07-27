@@ -91,6 +91,10 @@ class EmbeddingService:
             
         return formatted_results
 
+    def delete_file(self, file_id: str):
+        """Remove every vector owned by a file when it is deleted or reindexed."""
+        self.collection.delete(where={"file_id": file_id})
+
 # Singleton instance
 embedding_service = None
 

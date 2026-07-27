@@ -37,7 +37,8 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(graph_router, prefix="/api")
 app.include_router(ml_router, prefix="/api")
 
-# Direct Fallback Routers without '/api' prefix (agar frontend direct endpoint hit kare)
+# The Node service calls these internal routes directly.  Keeping both prefixes
+# maintains compatibility with the desktop client without fabricating responses.
 app.include_router(embed_router)
 app.include_router(parse_router)
 app.include_router(chat_router)
@@ -50,32 +51,6 @@ app.include_router(ml_router)
 @app.get("/api/internal/health")
 async def health_check():
     return {"status": "ok", "service": "ai-service"}
-
-
-# Universal Fallback Handlers for Phase 1 endpoints to prevent 404
-@app.get("/api/workspace/projects")
-@app.get("/workspace/projects")
-async def get_workspace_projects():
-    return {"success": True, "projects": [], "message": "No active projects detected yet."}
-
-
-@app.exception_handler(404)
-async def custom_404_handler(request: Request, exc):
-    path = request.url.path
-    # Catch-all graceful fallback for missing API routes during phase 1 integration
-    if path.startswith("/api/") or path.startswith("/workspace/"):
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "data": None,
-                "message": f"Endpoint {path} reached successfully. Integration active.",
-            }
-        )
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "Not Found"}
-    )
 
 
 if __name__ == "__main__":
