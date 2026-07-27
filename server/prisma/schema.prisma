@@ -1,0 +1,288 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════
+// AUTHENTICATION & USER
+// ═══════════════════════════════════
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  name          String?
+  picture       String?
+  googleId      String   @unique
+  createdAt     DateTime @default(now())
+  lastLoginAt   DateTime @default(now())
+  
+  workspace     Workspace?
+  settings      Setting[]
+  conversations Conversation[]
+  preferences   UserPreference[]
+}
+
+// ═══════════════════════════════════
+// WORKSPACE & PERMISSIONS
+// ═══════════════════════════════════
+
+model Workspace {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  rootPath      String?
+  status        String   @default("created") // created | scanning | ready | error
+  totalFiles    Int      @default(0)
+  totalProjects Int      @default(0)
+  storageBytes  BigInt   @default(0)
+  lastScanAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  user          User     @relation(fields: [userId], references: [id])
+  permissions   Permission[]
+  scanJobs      ScanJob[]
+}
+
+model Permission {
+  id            String   @id @default(uuid())
+  workspaceId   String
+  path          String
+  label         String   // Documents, Downloads, Desktop, Projects, Pictures
+  enabled       Boolean  @default(false)
+  grantedAt     DateTime?
+  createdAt     DateTime @default(now())
+  
+  workspace     Workspace @relation(fields: [workspaceId], references: [id])
+  
+  @@unique([workspaceId, path])
+}
+
+model ScanJob {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  status          String   @default("queued") // queued | scanning | indexing | embedding | complete | error
+  filesFound      Int      @default(0)
+  filesProcessed  Int      @default(0)
+  filesErrored    Int      @default(0)
+  errorMessage    String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  
+  workspace       Workspace @relation(fields: [workspaceId], references: [id])
+}
+
+// ═══════════════════════════════════
+// FILE SYSTEM
+// ═══════════════════════════════════
+
+model FileRecord {
+  id              String   @id @default(uuid())
+  path            String   @unique
+  filename        String
+  extension       String?
+  mimeType        String?
+  category        String   // project | document | image | code | config | research | certificate | resume | presentation | spreadsheet | data
+  sizeBytes       BigInt
+  contentHash     String?  // SHA-256 for dedup & cache
+  extractedText   String?  // First 10K chars for preview
+  aiSummary       String?
+  aiTags          String?  // JSON array
+  aiCategory      String?  // ML-classified category
+  fileModifiedAt  DateTime
+  indexedAt       DateTime?
+  lastAnalyzedAt  DateTime?
+  status          String   @default("discovered") // discovered | extracting | indexed | analyzed | error
+  errorMessage    String?
+  projectId       String?
+  
+  project         Project?    @relation(fields: [projectId], references: [id])
+  chunks          Chunk[]
+  sourceRels      Relationship[] @relation("sourceFile")
+  targetRels      Relationship[] @relation("targetFile")
+  accessLogs      FileAccessLog[]
+  
+  @@index([category])
+  @@index([projectId])
+  @@index([contentHash])
+  @@index([status])
+}
+
+model Chunk {
+  id              String   @id @default(uuid())
+  fileId          String
+  chunkIndex      Int
+  content         String
+  chromaId        String?  // ChromaDB document ID
+  startOffset     Int
+  endOffset       Int
+  tokenCount      Int      @default(0)
+  
+  file            FileRecord @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@unique([fileId, chunkIndex])
+}
+
+// ═══════════════════════════════════
+// PROJECTS
+// ═══════════════════════════════════
+
+model Project {
+  id                  String   @id @default(uuid())
+  name                String
+  path                String   @unique
+  description         String?
+  projectType         String?  // web-app | ml-project | mobile-app | api-service | library | data-science | research
+  detectedLanguages   String?  // JSON array
+  detectedFrameworks  String?  // JSON array
+  technologyStack     String?  // JSON array
+  healthScore         Float?   // 0-100
+  healthFactors       String?  // JSON object
+  readmeContent       String?
+  readmeQuality       Float?   // 0-100
+  gitRemoteUrl        String?
+  lastCommitAt        DateTime?
+  totalFiles          Int      @default(0)
+  totalLines          Int      @default(0)
+  complexity          String?  // low | medium | high | very-high
+  architecturePattern String?  // monolith | microservices | mvc | component-based | layered
+  securityIssues      String?  // JSON array
+  discoveredAt        DateTime @default(now())
+  analyzedAt          DateTime?
+  
+  files               FileRecord[]
+  analyses            ProjectAnalysis[]
+}
+
+model ProjectAnalysis {
+  id              String   @id @default(uuid())
+  projectId       String
+  analysisType    String   // health | security | architecture | dependencies | full
+  result          String   // JSON result payload
+  createdAt       DateTime @default(now())
+  
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId, analysisType])
+}
+
+// ═══════════════════════════════════
+// KNOWLEDGE GRAPH
+// ═══════════════════════════════════
+
+model Relationship {
+  id                String   @id @default(uuid())
+  sourceFileId      String
+  targetFileId      String
+  relationshipType  String   // uses | references | related_to | part_of | derived_from | imports | depends_on | tests | documents
+  confidence        Float    @default(0.5)
+  context           String?  // Why this relationship was detected
+  detectedAt        DateTime @default(now())
+  
+  sourceFile        FileRecord @relation("sourceFile", fields: [sourceFileId], references: [id], onDelete: Cascade)
+  targetFile        FileRecord @relation("targetFile", fields: [targetFileId], references: [id], onDelete: Cascade)
+  
+  @@unique([sourceFileId, targetFileId, relationshipType])
+  @@index([relationshipType])
+}
+
+// ═══════════════════════════════════
+// AI MEMORY
+// ═══════════════════════════════════
+
+model Conversation {
+  id            String   @id @default(uuid())
+  userId        String
+  title         String?
+  messages      String   // JSON array of {role, content, timestamp}
+  context       String?  // JSON: files referenced, projects discussed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  user          User     @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+}
+
+model FileAccessLog {
+  id            String   @id @default(uuid())
+  fileId        String
+  accessType    String   // view | search | ai_query | open
+  accessedAt    DateTime @default(now())
+  
+  file          FileRecord @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([fileId])
+  @@index([accessedAt])
+}
+
+model UserPreference {
+  id            String   @id @default(uuid())
+  userId        String
+  key           String   // frequently_used_tech | preferred_projects | search_patterns
+  value         String   // JSON
+  updatedAt     DateTime @updatedAt
+  
+  user          User     @relation(fields: [userId], references: [id])
+  
+  @@unique([userId, key])
+}
+
+// ═══════════════════════════════════
+// AI CACHE
+// ═══════════════════════════════════
+
+model AICache {
+  id            String   @id @default(uuid())
+  cacheType     String   // summary | embedding_ref | classification | tags | analysis
+  cacheKey      String   @unique // {type}:{file_id}:{content_hash}
+  value         String   // Cached result (JSON or text)
+  contentHash   String   // Hash of source content when cached
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime?
+  
+  @@index([cacheType])
+  @@index([contentHash])
+}
+
+// ═══════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════
+
+model Setting {
+  id            String   @id @default(uuid())
+  userId        String
+  key           String
+  value         String
+  category      String   // general | ai | privacy | appearance | workspace
+  
+  user          User     @relation(fields: [userId], references: [id])
+  
+  @@unique([userId, key])
+  @@index([category])
+}
+
+// ═══════════════════════════════════
+// BACKGROUND JOBS
+// ═══════════════════════════════════
+
+model Job {
+  id            String   @id @default(uuid())
+  type          String   // scan | index | embed | ocr | thumbnail | summarize | graph | relationship | metadata
+  payload       String   // JSON
+  priority      Int      @default(5) // 1 = highest, 10 = lowest
+  status        String   @default("queued") // queued | running | complete | error | cancelled
+  progress      Int      @default(0) // 0-100
+  progressMsg   String?
+  result        String?  // JSON result or error message
+  createdAt     DateTime @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+  
+  @@index([status, priority])
+  @@index([type])
+}

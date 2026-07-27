@@ -1,0 +1,851 @@
+# NeuroDesk AI — Production Architecture Blueprint
+
+> **Role**: Chief Software Architect  
+> **Scope**: Complete backend system design for an AI-powered Personal Knowledge Operating System  
+> **Constraint**: The existing Next.js frontend is **frozen** — all work is backend / desktop infrastructure
+
+---
+
+## 1. High-Level System Architecture
+
+```mermaid
+graph TB
+    subgraph "Frontend Layer (Frozen)"
+        UI["Next.js / React UI"]
+    end
+
+    subgraph "Desktop Shell"
+        TAURI["Tauri v2 (Rust)"]
+        IPC["IPC Bridge"]
+    end
+
+    subgraph "Backend Core (Rust + Sidecar)"
+        API["Local REST/WebSocket API Server"]
+        SCAN["File Scanner Engine"]
+        INDEX["Indexing Pipeline"]
+        SEARCH["Search Engine"]
+        ASSIST["AI Assistant Orchestrator"]
+        GRAPH["Knowledge Graph Engine"]
+        PERM["Permission Manager"]
+        SETTINGS["Settings Manager"]
+    end
+
+    subgraph "Storage Layer"
+        SQLITE["SQLite (Metadata + Settings)"]
+        QDRANT["Qdrant (Vector DB)"]
+        TANTIVY["Tantivy (Full-Text Search)"]
+        FS["Local Filesystem"]
+    end
+
+    subgraph "AI Layer"
+        LOCAL_LLM["Ollama (Local LLM)"]
+        EMBED["Local Embedding Model"]
+        CLOUD_LLM["Cloud LLM API (Optional)"]
+        VISION["Vision Model (Images/PDFs)"]
+    end
+
+    UI <-->|"IPC Commands"| TAURI
+    TAURI <--> IPC
+    IPC <--> API
+    API --> SCAN
+    API --> INDEX
+    API --> SEARCH
+    API --> ASSIST
+    API --> GRAPH
+    API --> PERM
+    API --> SETTINGS
+    SCAN --> FS
+    INDEX --> SQLITE
+    INDEX --> QDRANT
+    INDEX --> TANTIVY
+    SEARCH --> QDRANT
+    SEARCH --> TANTIVY
+    SEARCH --> SQLITE
+    ASSIST --> LOCAL_LLM
+    ASSIST --> CLOUD_LLM
+    INDEX --> EMBED
+    INDEX --> VISION
+    GRAPH --> SQLITE
+```
+
+---
+
+## 2. Recommended Technology Stack
+
+### Desktop Runtime
+
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| **Desktop shell** | **Tauri v2** (Rust) | Tiny binary (~3 MB vs 150+ MB Electron), native OS APIs, filesystem access, system tray, auto-update, security sandboxing. Embeds the Next.js frontend as a webview. |
+| **IPC** | Tauri IPC (invoke commands) | Type-safe bridge between frontend TS and backend Rust. Zero-copy where possible. |
+
+### Backend Core
+
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| **Primary language** | **Rust** | Memory safety, zero-cost abstractions, excellent async (tokio), native filesystem perf, compiles to single binary. |
+| **API server** | **Axum** (Rust) | Lightweight, async, tower-based. Serves REST + WebSocket for real-time progress/streaming. |
+| **Task orchestration** | **Tokio** tasks + channels | Async scanning, indexing, and AI inference run as background tasks with progress reporting. |
+| **Python sidecar** | **Python 3.11+** (optional) | Only for specific AI tasks where Python-exclusive libraries are needed (e.g., advanced document parsing). Bundled as a sidecar process. |
+
+### Storage
+
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| **Relational DB** | **SQLite** (via `rusqlite` / `sea-orm`) | Zero-config, embedded, single-file, ACID. Stores all metadata, permissions, settings, file records, relationships, knowledge graph edges. |
+| **Vector DB** | **Qdrant** (embedded mode) | Runs in-process via Rust bindings. No separate server needed. HNSW indexing, filtering, payload storage. Handles semantic search vectors. |
+| **Full-text search** | **Tantivy** (Rust) | Rust-native Lucene equivalent. BM25 ranking, tokenization, stemming. Sub-millisecond keyword search over tens of thousands of documents. |
+
+### AI / ML
+
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| **Local LLM** | **Ollama** | Simple local model server. Supports Llama 3.1, Mistral, Phi-3, Gemma 2, etc. REST API. User can choose model size based on hardware. |
+| **Embedding model** | **all-MiniLM-L6-v2** or **nomic-embed-text** via Ollama | Runs locally. 384-dim vectors. Fast inference on CPU. Good semantic quality. |
+| **Vision / OCR** | **LLaVA** or **Moondream** via Ollama | Local image understanding. Describes images, reads text in screenshots, understands diagrams. |
+| **Document parsing** | **pdf-extract**, **docx-rs**, **calamine** (Rust crates) | Native Rust parsers for PDF, DOCX, XLSX. No Python dependency for core parsing. |
+| **Cloud LLM (optional)** | **Gemini API** / **OpenAI API** | For users who opt-in to cloud AI for higher quality responses. Always opt-in, never default. |
+
+---
+
+## 3. Local Database Design
+
+### SQLite Schema (Core)
+
+```mermaid
+erDiagram
+    WORKSPACE ||--o{ PERMISSION : has
+    WORKSPACE ||--o{ SCAN_JOB : triggers
+    
+    PERMISSION ||--o{ FILE_RECORD : covers
+    
+    FILE_RECORD ||--o{ CHUNK : "split into"
+    FILE_RECORD ||--o{ FILE_TAG : tagged_with
+    FILE_RECORD ||--o{ RELATIONSHIP : source
+    FILE_RECORD ||--o{ RELATIONSHIP : target
+    
+    PROJECT ||--o{ FILE_RECORD : contains
+    PROJECT ||--o{ PROJECT_ANALYSIS : analyzed_by
+    
+    CHUNK ||--o{ EMBEDDING_REF : "vector in Qdrant"
+    
+    FILE_RECORD {
+        text id PK
+        text path
+        text filename
+        text extension
+        text mime_type
+        text category "project|document|image|code|config|research|certificate|resume"
+        integer size_bytes
+        text content_hash "SHA-256 for dedup"
+        text extracted_text "first 10K chars preview"
+        text ai_summary
+        text ai_tags "JSON array"
+        datetime file_modified_at
+        datetime indexed_at
+        datetime last_analyzed_at
+        text status "pending|indexed|analyzed|error"
+        text project_id FK
+    }
+
+    PROJECT {
+        text id PK
+        text name
+        text path
+        text description
+        text detected_languages "JSON array"
+        text detected_frameworks "JSON array"
+        real health_score
+        text readme_content
+        text git_remote_url
+        datetime last_commit_at
+        datetime discovered_at
+    }
+
+    CHUNK {
+        text id PK
+        text file_id FK
+        integer chunk_index
+        text content
+        text qdrant_point_id
+        integer start_offset
+        integer end_offset
+    }
+
+    RELATIONSHIP {
+        text id PK
+        text source_file_id FK
+        text target_file_id FK
+        text relationship_type "uses|references|related_to|part_of|derived_from"
+        real confidence
+        text context
+    }
+
+    PERMISSION {
+        text id PK
+        text path
+        text label "Documents|Downloads|Desktop|Projects|Pictures"
+        boolean enabled
+        datetime granted_at
+    }
+
+    WORKSPACE {
+        text id PK
+        text root_path
+        datetime created_at
+        datetime last_scan_at
+        text status
+    }
+
+    SCAN_JOB {
+        text id PK
+        text workspace_id FK
+        text status "queued|scanning|indexing|embedding|complete|error"
+        integer files_found
+        integer files_processed
+        integer files_errored
+        datetime started_at
+        datetime completed_at
+    }
+
+    SETTINGS {
+        text key PK
+        text value
+        text category "general|ai|privacy|appearance"
+    }
+```
+
+### Qdrant Collections
+
+| Collection | Vector Dim | Payload | Purpose |
+|-----------|-----------|---------|---------|
+| `file_chunks` | 384 | `{file_id, chunk_index, category, project_id}` | Semantic search over document/code chunks |
+| `file_summaries` | 384 | `{file_id, category, tags}` | High-level file similarity and recommendations |
+| `project_embeddings` | 384 | `{project_id, technologies}` | Project-level semantic search |
+
+### Tantivy Indexes
+
+| Index | Fields | Purpose |
+|-------|--------|---------|
+| `files` | `path`, `filename`, `content`, `tags`, `category` | Keyword & full-text search with BM25 ranking |
+| `projects` | `name`, `description`, `technologies`, `readme` | Project search |
+
+---
+
+## 4. AI Architecture
+
+### Processing Pipeline
+
+```mermaid
+flowchart LR
+    A["File Discovered"] --> B{"File Type?"}
+    B -->|"PDF/DOCX/PPTX"| C["Document Parser"]
+    B -->|"Code/Config"| D["Code Analyzer"]
+    B -->|"Image/Screenshot"| E["Vision Model"]
+    B -->|"CSV/Excel/JSON"| F["Structured Data Parser"]
+    B -->|"Markdown/TXT"| G["Text Extractor"]
+    
+    C --> H["Text Chunker"]
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+    
+    H --> I["Embedding Model"]
+    I --> J["Qdrant Storage"]
+    
+    H --> K["AI Summarizer"]
+    K --> L["SQLite Metadata"]
+    
+    H --> M["Tantivy Indexer"]
+    
+    K --> N["Relationship Detector"]
+    N --> L
+```
+
+### Chunking Strategy
+
+| File Type | Strategy | Chunk Size |
+|-----------|----------|-----------|
+| Code files | Function/class boundaries (AST-aware) | ~500 tokens |
+| Documents (PDF, DOCX) | Paragraph boundaries with overlap | ~400 tokens, 50 token overlap |
+| Markdown | Section headers as boundaries | ~400 tokens |
+| Research papers | Abstract, sections, references separated | ~500 tokens |
+| CSV/Excel | Row groups with header context | ~300 tokens |
+| Config files | Whole file (usually small) | Full file |
+
+### AI Task Types
+
+| Task | Model | Trigger |
+|------|-------|---------|
+| Generate embeddings | `nomic-embed-text` (local) | On file index |
+| Summarize file | `llama3.1:8b` or `phi3` (local) | On file index |
+| Describe image | `llava:7b` or `moondream` (local) | On image index |
+| Answer question | `llama3.1:8b` / Gemini (cloud, opt-in) | User query |
+| Generate README | `llama3.1:8b` / Gemini | User request |
+| Detect relationships | Rule-based + LLM | Post-indexing batch |
+| Bug detection | `llama3.1:8b` / Gemini | User request |
+| Resume generation | `llama3.1:8b` / Gemini | User request |
+
+---
+
+## 5. Search Architecture
+
+### Hybrid Search Pipeline
+
+```mermaid
+flowchart LR
+    Q["User Query"] --> A["Query Analyzer"]
+    A --> B["Intent Classifier"]
+    
+    B -->|"Keyword Match"| C["Tantivy BM25"]
+    B -->|"Semantic"| D["Qdrant Vector Search"]
+    B -->|"Both"| C
+    B -->|"Both"| D
+    
+    C --> E["Result Merger (RRF)"]
+    D --> E
+    
+    E --> F["Re-ranker"]
+    F --> G["Filter & Boost"]
+    G --> H["Final Results"]
+    
+    A --> I["Extract Filters"]
+    I -->|"category, date, project"| G
+```
+
+### Search Modes
+
+| Mode | Engine | Example |
+|------|--------|---------|
+| **Keyword** | Tantivy | `"main.py"`, `"README"` |
+| **Semantic** | Qdrant | `"projects using machine learning"` |
+| **Hybrid** | Both + RRF fusion | `"smart farmer AI project"` |
+| **Natural Language** | LLM → structured query → Hybrid | `"find my AWS certificate from last month"` |
+| **Image** | Vision model description → Qdrant | `"photos where I'm presenting"` |
+| **Code** | AST-aware Tantivy + Qdrant | `"functions that handle authentication"` |
+
+### Ranking Strategy
+
+1. **Reciprocal Rank Fusion (RRF)**: Combines BM25 and vector scores
+2. **Recency boost**: Recently modified files score higher
+3. **Category boost**: Match file category to query intent
+4. **Project affinity**: Files in active projects score higher
+5. **Relationship boost**: Files connected in the knowledge graph get bonus
+
+---
+
+## 6. Desktop Architecture (Tauri v2)
+
+### Architecture Layers
+
+```mermaid
+graph TB
+    subgraph "Tauri Window"
+        WV["WebView (Next.js Frontend)"]
+    end
+    
+    subgraph "Tauri Core"
+        CMD["Tauri Commands (Rust)"]
+        EVT["Event System"]
+        TRAY["System Tray"]
+        UPDATE["Auto-Updater"]
+        FS_API["Filesystem API"]
+        DIALOG["Native Dialogs"]
+    end
+    
+    subgraph "Backend Services"
+        SVC["Service Layer"]
+        WORKER["Background Workers"]
+        OLLAMA_MGR["Ollama Manager"]
+    end
+    
+    WV <-->|"invoke()"| CMD
+    WV <-->|"listen()"| EVT
+    CMD --> SVC
+    SVC --> WORKER
+    SVC --> OLLAMA_MGR
+    WORKER -->|"emit(progress)"| EVT
+```
+
+### Key Tauri Commands (IPC Contract)
+
+```
+// Workspace
+invoke('workspace:scan', { paths: string[] })
+invoke('workspace:rebuild')
+invoke('workspace:status') → WorkspaceStatus
+
+// Search  
+invoke('search:query', { q: string, filters?: Filters }) → SearchResults
+invoke('search:suggest', { partial: string }) → Suggestions
+
+// AI Assistant
+invoke('ai:chat', { message: string, context?: string[] }) → stream
+invoke('ai:summarize', { fileId: string }) → Summary
+invoke('ai:generate_readme', { projectId: string }) → string
+invoke('ai:analyze_project', { projectId: string }) → Analysis
+
+// Files
+invoke('files:get', { id: string }) → FileRecord
+invoke('files:list', { projectId?: string, category?: string }) → FileRecord[]
+invoke('files:tree', { projectId: string }) → FileTree
+
+// Projects
+invoke('projects:list') → Project[]
+invoke('projects:get', { id: string }) → ProjectDetail
+invoke('projects:health', { id: string }) → HealthReport
+
+// Permissions
+invoke('permissions:list') → Permission[]
+invoke('permissions:update', { id: string, enabled: boolean })
+invoke('permissions:add_folder') → opens native dialog
+
+// Settings
+invoke('settings:get', { category?: string }) → Settings
+invoke('settings:update', { key: string, value: string })
+
+// System
+invoke('system:ollama_status') → OllamaStatus
+invoke('system:storage_usage') → StorageInfo
+```
+
+### Streaming & Real-time
+
+- **WebSocket** for AI chat streaming (token-by-token response)
+- **Tauri events** for scan progress, indexing progress, background task status
+- **Server-Sent Events** fallback for simpler one-way updates
+
+---
+
+## 7. File Indexing Strategy
+
+### Discovery Pipeline
+
+```mermaid
+flowchart TB
+    A["Permission Granted Folders"] --> B["Recursive Directory Walker"]
+    B --> C{"Should Index?"}
+    C -->|"Yes"| D["Compute Content Hash"]
+    C -->|"Skip"| E["Add to Exclusion List"]
+    
+    D --> F{"Already Indexed? Hash Match?"}
+    F -->|"New/Changed"| G["Extract Content"]
+    F -->|"Unchanged"| H["Skip"]
+    
+    G --> I["Classify File Type"]
+    I --> J["Parse & Chunk"]
+    J --> K["Generate Embeddings"]
+    K --> L["Store in Qdrant"]
+    J --> M["Index in Tantivy"]
+    J --> N["Store Metadata in SQLite"]
+    
+    G --> O["AI Summarize (background)"]
+    O --> N
+```
+
+### Exclusion Rules (Default)
+
+```
+node_modules/
+.git/objects/
+__pycache__/
+.venv/
+dist/
+build/
+.next/
+*.lock
+*.log
+*.min.js
+*.min.css
+*.map
+*.wasm
+*.exe
+*.dll
+*.so
+Thumbs.db
+.DS_Store
+```
+
+### Incremental Indexing
+
+1. **Initial scan**: Full recursive scan on first setup (~2-5 minutes for a typical workspace)
+2. **File watcher**: Use `notify` (Rust crate) for real-time filesystem change detection
+3. **Content hashing**: SHA-256 hash to detect actual content changes vs. timestamp-only changes
+4. **Delta updates**: Only re-index changed files, update vectors and search index incrementally
+5. **Background processing**: AI summarization and relationship detection run as low-priority background tasks
+
+### Project Detection Heuristics
+
+A directory is classified as a "project" if it contains any of:
+
+| Indicator | Confidence |
+|-----------|-----------|
+| `package.json` | High |
+| `requirements.txt` / `setup.py` / `pyproject.toml` | High |
+| `Cargo.toml` | High |
+| `.git/` directory | High |
+| `pom.xml` / `build.gradle` | High |
+| `Makefile` + source files | Medium |
+| `README.md` + structured subdirectories | Medium |
+| `*.sln` / `*.csproj` | High |
+| `go.mod` | High |
+| `Dockerfile` | Medium |
+
+---
+
+## 8. Vector Database Strategy
+
+### Why Qdrant (Embedded)
+
+| Criteria | Qdrant | ChromaDB | Milvus | FAISS |
+|----------|--------|----------|--------|-------|
+| **Embedded mode** | ✅ Rust native | ❌ Python server | ❌ Distributed only | ✅ Library |
+| **Filtering** | ✅ Rich payloads | ⚠️ Basic | ✅ Rich | ❌ None |
+| **Performance** | ✅ HNSW + quantization | ⚠️ Moderate | ✅ Fast | ✅ Very fast |
+| **Persistence** | ✅ On-disk | ✅ On-disk | ✅ On-disk | ❌ In-memory |
+| **Rust integration** | ✅ Native client | ❌ Python only | ❌ gRPC | ⚠️ C++ FFI |
+| **Production ready** | ✅ | ⚠️ | ✅ | ⚠️ |
+
+### Configuration
+
+- **Distance metric**: Cosine similarity
+- **Index type**: HNSW with product quantization for memory efficiency
+- **Dimensions**: 384 (matching `all-MiniLM-L6-v2` or `nomic-embed-text`)
+- **On-disk storage**: `~/.neurodesk/qdrant/`
+- **Expected scale**: 50K-500K vectors for a typical power-user workspace
+
+---
+
+## 9. Security & Privacy Model
+
+### Core Principles
+
+> [!IMPORTANT]
+> **Privacy is the #1 feature.** Every architectural decision must default to local-only processing.
+
+### Privacy Architecture
+
+```mermaid
+flowchart TB
+    subgraph "Always Local"
+        A["File Scanning"]
+        B["Content Indexing"]
+        C["Vector Embeddings"]
+        D["Full-text Search"]
+        E["Knowledge Graph"]
+        F["Metadata Storage"]
+    end
+    
+    subgraph "User Opt-in Only"
+        G["Cloud LLM Queries"]
+        H["Google Account"]
+        I["GitHub Integration"]
+    end
+    
+    subgraph "Never"
+        J["Automatic File Upload"]
+        K["Telemetry with File Content"]
+        L["Third-party Analytics on User Data"]
+    end
+```
+
+### Security Measures
+
+| Area | Implementation |
+|------|---------------|
+| **File access** | Explicit folder permission grants only. Stored in SQLite. Revocable anytime. |
+| **Data at rest** | SQLite with optional SQLCipher encryption. Qdrant data in user-owned directory. |
+| **API keys** | Stored in OS-native credential store (`windows-credentials` / `keychain`). Never in plaintext config. |
+| **Cloud AI** | User must explicitly enable. Each query shows what context is sent. Toggle per-conversation. |
+| **Auto-update** | Tauri's built-in updater with code signing verification. |
+| **Process isolation** | Tauri's security model: frontend cannot directly access filesystem. All access through Rust commands. |
+| **Exclusion list** | Users can mark files/folders as "never index" from the UI. Respected globally. |
+
+### Data Residency
+
+All data stored under `~/.neurodesk/`:
+
+```
+~/.neurodesk/
+├── db/
+│   └── neurodesk.db          # SQLite (metadata, settings, graph)
+├── qdrant/                    # Vector database files
+├── tantivy/                   # Full-text search index
+├── cache/
+│   ├── thumbnails/            # Generated file previews
+│   └── summaries/             # Cached AI summaries
+├── config.toml                # Non-sensitive settings
+└── logs/
+    └── neurodesk.log          # Rotated application logs
+```
+
+---
+
+## 10. External Services & APIs
+
+### Required (Local)
+
+| Service | Purpose | Installation |
+|---------|---------|-------------|
+| **Ollama** | Local LLM inference server | Bundled installer or user-installed. Auto-detected. |
+
+### Optional (Cloud, Opt-in)
+
+| Service | Purpose | When Needed |
+|---------|---------|-------------|
+| **Google Gemini API** | Higher quality AI responses | User opts into cloud AI |
+| **OpenAI API** | Alternative cloud AI | User preference |
+| **Google OAuth** | Google account integration | Future Google Drive support |
+| **GitHub OAuth** | Repository integration | Future GitHub sync |
+| **OneDrive API** | Cloud file sync | Future OneDrive support |
+
+### No Required Cloud Services for Core Functionality
+
+> [!NOTE]
+> The entire core product (scanning, indexing, search, local AI) works **100% offline** with zero cloud dependencies.
+
+---
+
+## 11. Development Phases
+
+### Phase 0: Foundation (Week 1-2)
+
+> **Goal**: Set up the Tauri + Rust project scaffold and establish the IPC bridge with the existing frontend.
+
+- [ ] Initialize Tauri v2 project wrapping the existing Next.js frontend
+- [ ] Set up Rust workspace with `cargo` (core library, Tauri app, shared types)
+- [ ] Define TypeScript ↔ Rust IPC type contracts
+- [ ] Implement basic Tauri commands (`system:status`, `settings:get/update`)
+- [ ] Set up SQLite database with migrations (using `sqlx` or `sea-orm`)
+- [ ] Build the Permission Manager (grant/revoke folder access via native dialogs)
+- [ ] Configure CI/CD for building Tauri app on Windows
+
+---
+
+### Phase 1: File Discovery & Indexing (Week 3-5)
+
+> **Goal**: Scan permitted folders, discover projects, extract content from all supported file types.
+
+- [ ] Build recursive directory scanner with exclusion rules
+- [ ] Implement project detection heuristics
+- [ ] Build file type parsers:
+  - [ ] PDF extractor
+  - [ ] DOCX/PPTX extractor
+  - [ ] Code file reader (with language detection)
+  - [ ] Markdown/TXT reader
+  - [ ] CSV/Excel parser
+  - [ ] Image metadata extractor
+  - [ ] JSON/Config parser
+- [ ] Implement content hashing (SHA-256) for dedup & change detection
+- [ ] Store file metadata in SQLite
+- [ ] Implement filesystem watcher for real-time updates
+- [ ] Build scan progress reporting via Tauri events
+- [ ] Connect WorkspaceBuilder screen to real scan progress
+
+---
+
+### Phase 2: Search Engine (Week 6-7)
+
+> **Goal**: Implement full-text keyword search that works instantly.
+
+- [ ] Set up Tantivy index with schema for files and projects
+- [ ] Build indexing pipeline: file content → Tantivy documents
+- [ ] Implement keyword search with BM25 ranking
+- [ ] Add filters (file type, date range, project, category)
+- [ ] Implement search suggestions / autocomplete
+- [ ] Connect the hero search bar to real search results
+- [ ] Add result rendering with file previews and highlights
+
+---
+
+### Phase 3: AI Integration & Semantic Search (Week 8-11)
+
+> **Goal**: Add local AI capabilities — embeddings, semantic search, and basic AI assistant.
+
+- [ ] Build Ollama manager (detect, install prompt, health check)
+- [ ] Implement text chunking pipeline (type-aware strategies)
+- [ ] Generate embeddings for all indexed content
+- [ ] Set up Qdrant (embedded) with file_chunks collection
+- [ ] Implement semantic search
+- [ ] Build hybrid search (BM25 + vector + RRF fusion)
+- [ ] Implement AI chat with RAG (Retrieval-Augmented Generation):
+  - User query → embed → find relevant chunks → build prompt → LLM → stream response
+- [ ] Connect AI Assistant panel to real backend
+- [ ] Implement file summarization
+- [ ] Implement image understanding via vision model
+
+---
+
+### Phase 4: Knowledge Graph & Intelligence (Week 12-14)
+
+> **Goal**: Build the relationship layer that connects files, projects, skills, and topics.
+
+- [ ] Implement relationship detection:
+  - Code imports → file dependencies
+  - Shared technologies → project connections
+  - Resume ↔ project ↔ certificate relationships
+  - Research paper ↔ project topic matching
+- [ ] Build knowledge graph queries (traverse relationships)
+- [ ] Implement project health analysis:
+  - README quality, test coverage, commit recency, dependency freshness
+- [ ] Add workspace insights (daily brief data)
+- [ ] Connect ProjectWorkspace screen to real data (file tree, analysis, activity)
+- [ ] Connect Settings drawer to real workspace statistics
+
+---
+
+### Phase 5: Advanced AI Features (Week 15-18)
+
+> **Goal**: Build the high-value AI workflows that make NeuroDesk a must-have tool.
+
+- [ ] README generation from project analysis
+- [ ] Interview preparation (generate talking points from projects)
+- [ ] Resume bullet point generation from projects
+- [ ] Bug detection via code analysis
+- [ ] Architecture explanation
+- [ ] Document comparison
+- [ ] Code explanation
+- [ ] Duplicate file detection (via content hash + embedding similarity)
+- [ ] File recommendations ("related files you might need")
+- [ ] Optional cloud LLM integration (Gemini / OpenAI)
+
+---
+
+### Phase 6: Polish, Packaging & Distribution (Week 19-21)
+
+> **Goal**: Production-ready desktop application.
+
+- [ ] Windows installer (MSI/NSIS) via Tauri bundler
+- [ ] Auto-update mechanism
+- [ ] System tray with quick search
+- [ ] Global keyboard shortcut (e.g., `Alt+Space` for spotlight search)
+- [ ] Onboarding flow connected to real backend
+- [ ] Error handling & recovery
+- [ ] Performance profiling & optimization
+- [ ] Logging & crash reporting (local only)
+- [ ] User documentation
+
+---
+
+### Future Phases (Post-MVP)
+
+- [ ] Google Drive integration
+- [ ] GitHub repository sync
+- [ ] OneDrive support
+- [ ] macOS and Linux builds
+- [ ] Cloud sync between devices (opt-in)
+- [ ] Voice input (speech-to-text)
+- [ ] Plugin system for community extensions
+
+---
+
+## 12. Risks & Challenges
+
+### Technical Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| **Ollama not installed / GPU unavailable** | AI features non-functional | Graceful degradation. Show clear setup wizard. Support CPU-only models (phi3-mini). Fall back to keyword search. |
+| **Large workspaces (>100K files)** | Slow initial scan & high memory | Incremental scanning with priority queues. Stream results. Background indexing. Configurable depth limits. |
+| **Embedding model quality on CPU** | Slow inference, poor search quality | Use quantized models. Batch embedding. Cache aggressively. Allow cloud embedding opt-in. |
+| **PDF parsing complexity** | Scanned PDFs, complex layouts fail | Use OCR fallback (Tesseract via Rust binding). Skip unparseable pages gracefully. |
+| **Tauri v2 maturity** | API changes, platform bugs | Pin Tauri version. Maintain abstraction layer over Tauri APIs. Active community support. |
+| **SQLite concurrency** | Write contention during heavy indexing | WAL mode. Read-write separation. Queue writes through a dedicated writer task. |
+
+### Product Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| **User hardware variance** | Low-end machines can't run local LLM | Tiered model recommendations (tiny/small/medium). Cloud AI fallback. Features degrade gracefully. |
+| **User trust (privacy)** | Users hesitant to grant folder access | Transparent permission model. Show exactly what is scanned. Never auto-scan. Allow fine-grained exclusions. |
+| **Stale index** | Files change but index doesn't update | Real-time filesystem watcher. Background re-scan scheduler. Manual "Rescan" button. |
+| **AI hallucinations** | Incorrect summaries or answers | Always cite source files. Show confidence indicators. Provide "Show sources" for every AI response. |
+
+---
+
+## 13. Best Practices for Scalability & Maintainability
+
+### Code Architecture
+
+- **Hexagonal architecture**: Core logic has no dependencies on Tauri, SQLite, or Qdrant. All storage/AI/search behind trait interfaces.
+- **Dependency injection**: All services constructed with trait objects, enabling testing with mocks.
+- **Error handling**: `thiserror` + `anyhow` for typed errors. No panics in production code.
+- **Logging**: `tracing` crate with structured logging. Log levels configurable at runtime.
+
+### Performance
+
+- **Lazy loading**: Only load file content when requested. Store previews/summaries in metadata.
+- **Batch operations**: Embed in batches of 32-64 chunks. Bulk insert into Qdrant/Tantivy.
+- **Connection pooling**: SQLite connection pool via `r2d2` or `deadpool`.
+- **Memory limits**: Cap in-memory chunk buffer during indexing. Stream large files.
+
+### Testing Strategy
+
+- **Unit tests**: Pure Rust logic (parsers, chunkers, rankers) with `#[test]`
+- **Integration tests**: SQLite + Qdrant + Tantivy with temp databases
+- **E2E tests**: Tauri's test driver for IPC command testing
+- **Fixture files**: Real-world sample files (PDF, DOCX, code) for parser testing
+
+### Versioning & Migrations
+
+- **Database migrations**: Version-stamped SQL migrations. Auto-run on app startup.
+- **Vector DB migrations**: Qdrant collection schema versioning. Rebuild collection if schema changes.
+- **Config versioning**: `config.toml` versioned. Migration logic for breaking changes.
+
+---
+
+## 14. Additional Planning Considerations
+
+### Hardware Requirements (Recommended)
+
+| Tier | RAM | Storage | GPU | AI Capability |
+|------|-----|---------|-----|--------------|
+| **Minimum** | 8 GB | 2 GB free | None | Keyword search only. Small embedding model on CPU. |
+| **Recommended** | 16 GB | 5 GB free | None | Full local AI with `phi3-mini` (3.8B). Semantic search. |
+| **Optimal** | 16+ GB | 10 GB free | NVIDIA 6GB+ VRAM | Full local AI with `llama3.1:8b`. Fast embedding. Vision model. |
+
+### Ollama Model Recommendations
+
+| Use Case | Model | Size | VRAM/RAM |
+|----------|-------|------|----------|
+| Embedding | `nomic-embed-text` | 274 MB | ~500 MB |
+| Chat (light) | `phi3:mini` | 2.3 GB | ~4 GB |
+| Chat (quality) | `llama3.1:8b` | 4.7 GB | ~8 GB |
+| Vision | `moondream:1.8b` | 1.7 GB | ~3 GB |
+| Code | `codellama:7b` | 3.8 GB | ~6 GB |
+
+### Monitoring & Observability (Local)
+
+- **Disk usage dashboard**: Show SQLite, Qdrant, Tantivy, and cache sizes in Settings
+- **Indexing stats**: Files indexed, pending, errored. Last scan timestamp.
+- **AI model status**: Ollama running/stopped, models downloaded, inference latency
+- **Search analytics**: Query latency histogram (local only, no telemetry)
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Desktop Framework Choice**: This plan uses **Tauri v2** (Rust-based) instead of Electron. Tauri produces ~3 MB binaries vs. Electron's 150+ MB, and gives native filesystem access through Rust. However, it requires Rust development. If you prefer staying in the JavaScript/TypeScript ecosystem, we could use Electron instead — at the cost of larger binary size and slightly lower performance.
+
+> [!IMPORTANT]
+> **AI Runtime**: The plan assumes **Ollama** as the local LLM server (separate installation). An alternative is **llama.cpp** compiled directly into the Rust binary, which eliminates the external dependency but adds significant build complexity. Which approach do you prefer?
+
+> [!IMPORTANT]
+> **Primary Backend Language**: This plan uses **Rust** for maximum performance and native desktop integration. An alternative is a **Python (FastAPI)** backend running as a sidecar process — easier to develop but adds ~100 MB to the bundle and has slower file I/O. Which do you prefer?
+
+## Open Questions
+
+> [!IMPORTANT]
+> 1. **Do you have a preference for Rust vs. Python** for the backend? Rust gives better performance and smaller binaries but has a steeper learning curve. Python is faster to develop but requires bundling a Python runtime.
+>
+> 2. **Should Ollama be bundled** with the installer, or should users install it separately? Bundling adds ~500 MB to the installer but removes a setup step.
+>
+> 3. **What is your current hardware?** (RAM, GPU) — this will help me calibrate the default AI model recommendations.
+>
+> 4. **Do you want cloud AI (Gemini/OpenAI) from day one**, or should we build local-only first and add cloud as a later phase?
+>
+> 5. **Is Tauri acceptable**, or do you prefer Electron for the desktop wrapper? Both can wrap your existing Next.js frontend.
+>
+> 6. **Timeline expectations**: The plan above estimates ~21 weeks for a full MVP. Are you targeting a specific deadline?

@@ -1,0 +1,179 @@
+import { Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import axios from 'axios';
+import { AuthRequest } from '../middleware/auth';
+import { logger } from '../utils/logger';
+import { config } from '../config';
+import { WorkspaceMemory } from '../utils/memory';
+
+const prisma = new PrismaClient();
+const AI_SERVICE_URL = config.ai.serviceUrl;
+
+export class AIController {
+  
+  static async chat(req: AuthRequest, res: Response) {
+    try {
+      const { query, conversationId, provider, model } = req.body;
+      const userId = req.user!.userId;
+      
+      if (!query) {
+        return res.status(400).json({ success: false, error: 'Query is required' });
+      }
+
+      // 1. Fetch Conversation History
+      let history: any[] = [];
+      let convoId = conversationId;
+      
+      if (convoId) {
+        const convo = await prisma.conversation.findUnique({ where: { id: convoId } });
+        if (convo && convo.userId === userId) {
+          history = JSON.parse(convo.messages);
+        }
+      } else {
+        // Create new conversation
+        const convo = await prisma.conversation.create({
+          data: {
+            userId,
+            title: query.substring(0, 50),
+            messages: '[]'
+          }
+        });
+        convoId = convo.id;
+      }
+
+      res.setHeader('X-Conversation-Id', convoId);
+      
+      // 2. Fetch Workspace Memory
+      const workspaceContext = await WorkspaceMemory.getRecentContext(userId);
+      
+      // 3. Search for Relevant Chunks (if query seems search-worthy, or just do it anyway)
+      let retrievedChunks: any[] = [];
+      try {
+        const searchResponse = await axios.post(`${AI_SERVICE_URL}/internal/embed/search`, {
+          query,
+          limit: 10
+        });
+        if (searchResponse.data.success) {
+          retrievedChunks = searchResponse.data.results;
+        }
+      } catch (err) {
+        logger.warn('Failed to retrieve semantic chunks for context builder');
+      }
+
+      // 4. Setup SSE for streaming response to frontend
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      
+      // Stream from AI Service
+      logger.info(`Proxying chat to ${AI_SERVICE_URL}/internal/chat/stream, provider=${provider || 'default'}, model=${model || 'default'}`);
+      const streamReq = await axios.post(`${AI_SERVICE_URL}/internal/chat/stream`, {
+        query,
+        history,
+        retrieved_chunks: retrievedChunks,
+        workspace_context: workspaceContext,
+        provider,
+        model
+      }, {
+        responseType: 'stream',
+        timeout: 120000, // 2 minutes to prevent premature connection close
+      });
+      
+      let fullResponse = '';
+      let buffer = '';
+      
+      streamReq.data.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        // Parse SSE lines from python service
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.substring(6);
+            if (data !== '[DONE]' && !data.startsWith('[ERROR]')) {
+               fullResponse += data;
+            }
+          }
+        }
+        res.write(chunk); // pass through to frontend
+      });
+      
+      streamReq.data.on('end', async () => {
+        if (buffer.trim()) {
+          const leftoverLines = buffer.split('\n');
+          for (const line of leftoverLines) {
+            if (line.startsWith('data: ')) {
+              const data = line.substring(6);
+              if (data !== '[DONE]' && !data.startsWith('[ERROR]')) {
+                fullResponse += data;
+              }
+            }
+          }
+        }
+
+        // 5. Update Conversation History
+        const newHistory = [
+          ...history,
+          { role: 'user', content: query },
+          { role: 'assistant', content: fullResponse }
+        ];
+        
+        await prisma.conversation.update({
+          where: { id: convoId },
+          data: {
+            messages: JSON.stringify(newHistory),
+            updatedAt: new Date()
+          }
+        });
+        
+        // Trigger background summary job if history is too long
+        if (newHistory.length > 10) {
+          try {
+            const { mlQueue } = await import('../workers/queue');
+            mlQueue.push({ type: 'summary', conversationId: convoId });
+          } catch (err) {
+            logger.warn('Failed to enqueue summary job');
+          }
+        }
+        
+        res.end();
+      });
+
+      streamReq.data.on('error', (err: any) => {
+        logger.error(`Stream error during chat: ${err.message}`);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: 'Chat stream interrupted' });
+        } else {
+          res.write(`data: [ERROR] Stream interrupted\n\n`);
+          res.end();
+        }
+      });
+
+    } catch (error: any) {
+      logger.error(`Chat error: ${error.message}`);
+      logger.error(`Full error stack: ${error.stack}`);
+      if (error.response) {
+        logger.error(`Upstream status: ${error.response.status}`);
+      }
+      if (!res.headersSent) {
+        return res.status(500).json({ success: false, error: 'Chat processing failed' });
+      }
+      res.end();
+    }
+  }
+
+  static async getConversations(req: AuthRequest, res: Response) {
+    try {
+      const userId = req.user!.userId;
+      const convos = await prisma.conversation.findMany({
+        where: { userId },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true, title: true, updatedAt: true }
+      });
+      return res.json({ success: true, data: convos });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: 'Failed to fetch conversations' });
+    }
+  }
+}
