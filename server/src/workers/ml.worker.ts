@@ -39,6 +39,22 @@ export const processMlJob = async (job: any) => {
           data: { aiCategory: detectedCategory }
         });
       }
+
+      // Classification happens after the initial embed. Re-upsert the existing
+      // chunks so Chroma metadata remains consistent with SQLite metadata.
+      const chunks = await prisma.chunk.findMany({ where: { fileId }, orderBy: { chunkIndex: 'asc' } });
+      if (chunks.length) {
+        await axios.post(`${AI_SERVICE_URL}/internal/embed/batch`, {
+          file_id: fileId,
+          chunks: chunks.map(chunk => ({
+            chunk_index: chunk.chunkIndex,
+            content: chunk.content,
+            category: detectedCategory,
+            project_id: fileRecord.projectId || '',
+            filename: fileRecord.filename
+          }))
+        });
+      }
       
       // Request deep analysis for summary
       const analyzeRes = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {

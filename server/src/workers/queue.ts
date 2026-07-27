@@ -26,11 +26,11 @@ export const indexQueue = new Queue((job: any, cb: any) => {
   concurrent: 3 // Parallel indexing
 });
 
-scanQueue.on('task_failed', (taskId, err, stats) => {
+scanQueue.on('task_failed', (taskId: string, err: Error, stats: unknown) => {
   logger.error(`Scan task ${taskId} failed: ${err}`);
 });
 
-indexQueue.on('task_failed', (taskId, err, stats) => {
+indexQueue.on('task_failed', (taskId: string, err: Error, stats: unknown) => {
   logger.error(`Index task ${taskId} failed: ${err}`);
 });
 
@@ -46,6 +46,6 @@ export const mlQueue = new Queue((job: any, cb: any) => {
   concurrent: 2 // Parallel ML processing
 });
 
-mlQueue.on('task_failed', (taskId, err, stats) => {
+mlQueue.on('task_failed', (taskId: string, err: Error, stats: unknown) => {
   logger.error(`ML task ${taskId} failed: ${err}`);
 });

@@ -1,11 +1,12 @@
-import chokidar from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { isExcluded } from '../utils/exclusions';
-import { scanQueue } from './queue';
+import axios from 'axios';
+import { config } from '../config';
 
 const prisma = new PrismaClient();
-const watchers: Record<string, chokidar.FSWatcher> = {};
+const watchers: Record<string, FSWatcher> = {};
 
 export const setupWatchers = async () => {
   try {
@@ -49,6 +50,9 @@ const handleFileEvent = async (event: 'add' | 'change' | 'unlink', filePath: str
   // For unlinks, we can handle it immediately by marking status
   if (event === 'unlink') {
     try {
+      const record = await prisma.fileRecord.findUnique({ where: { path: filePath }, select: { id: true } });
+      if (!record) return;
+      await axios.delete(`${config.ai.serviceUrl}/internal/embed/file/${record.id}`);
       await prisma.fileRecord.delete({
         where: { path: filePath }
       });

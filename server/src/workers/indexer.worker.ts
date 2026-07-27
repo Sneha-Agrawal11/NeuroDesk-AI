@@ -39,10 +39,11 @@ export const processIndexJob = async (job: any) => {
         file_type: ext
       });
       
-      if (parseResponse.data.success) {
-        parsedText = parseResponse.data.text;
-        chunks = parseResponse.data.chunks;
+      if (!parseResponse.data?.success || !parseResponse.data.text?.trim()) {
+        throw new Error('Parser returned no extractable text');
       }
+      parsedText = parseResponse.data.text;
+      chunks = parseResponse.data.chunks || [];
     } catch (parseError: any) {
       logger.warn(`Failed to parse ${fileRecord.path} via AI service: ${parseError.message}. Storing as unindexed.`);
       parsedText = '';
@@ -53,8 +54,12 @@ export const processIndexJob = async (job: any) => {
       await indexFileInFts(fileId, fileRecord.filename, parsedText, fileRecord.category);
     }
     
-    // 3. Save chunks and send to ChromaDB for embedding
-    if (chunks.length > 0) {
+    // 3. Save chunks and send to ChromaDB for embedding.  Chroma is authoritative
+    // for semantic retrieval, so do not mark a file indexed until its upsert succeeds.
+    if (chunks.length === 0) {
+      throw new Error('No chunks were generated from extracted text');
+    }
+    {
         const chunkModels = chunks.map((content, index) => ({
         chunk_index: index,
         content: content,
@@ -90,10 +95,11 @@ export const processIndexJob = async (job: any) => {
       // For large files, we might skip this to save DB size, or only store metadata
       
       // Send to ChromaDB
-      await axios.post(`${AI_SERVICE_URL}/internal/embed/batch`, {
+      const embedResponse = await axios.post(`${AI_SERVICE_URL}/internal/embed/batch`, {
         file_id: fileId,
         chunks: chunkModels
       });
+      if (!embedResponse.data?.success) throw new Error('Embedding service did not confirm chunk storage');
     }
 
     // Update status to indexed
