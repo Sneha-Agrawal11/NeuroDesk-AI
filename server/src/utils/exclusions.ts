@@ -21,6 +21,8 @@ export const DEFAULT_EXCLUSIONS = [
   'bin', // C#/Java
   'obj', // C#
   'vendor', // PHP/Go
+  'benchmark_data',
+  'benchmark_data_large',
   
   // Files
   '.DS_Store',

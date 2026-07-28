@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force"
+    "db:reset": "prisma migrate reset --force",
+    "cleanup:benchmark": "tsx scripts/cleanupBenchmarkData.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

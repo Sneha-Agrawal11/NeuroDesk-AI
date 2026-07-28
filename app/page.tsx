@@ -73,12 +73,7 @@ export default function Page() {
         <WorkspaceBuilder onComplete={() => setScreen('workspace')} />
       )}
       {screen === 'workspace' && (
-        <MainWorkspace
-          workspaceStatus={workspaceStatus}
-          projectCount={projectCount}
-          onRequestImport={() => setScreen('permission')}
-          onImported={() => setScreen('builder')}
-        />
+        <MainWorkspace />
       )}
     </div>
   )
