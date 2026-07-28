@@ -270,7 +270,8 @@ export async function streamChat(
   retrievedChunks: unknown[] = [],
   workspaceContext: Record<string, unknown> = {},
   provider?: string,
-  model?: string
+  model?: string,
+  documentId?: string
 ): Promise<ChatResponse> {
   try {
     const response = await fetch(`${SERVER_BASE_URL}/ai/chat`, {
@@ -286,6 +287,7 @@ export async function streamChat(
         workspace_context: workspaceContext,
         provider,
         model,
+        documentId,
       }),
     })
 

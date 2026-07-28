@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { ChevronLeft, Brain, Send, FileText, FileSearch, Sparkles, Image as ImageIcon } from 'lucide-react'
+import { ChevronLeft, Brain, Send, FileText, FileSearch, Sparkles, Image as ImageIcon, X } from 'lucide-react'
 import { type DocumentSummary, streamChat, getStoredSession, searchWorkspace } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
@@ -18,6 +18,7 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
   const [messages, setMessages] = useState<any[]>([])
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
+  const [chatOpen, setChatOpen] = useState(true)
 
   useEffect(() => {
     // Fetch real analysis from backend
@@ -62,8 +63,13 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
     
     try {
       const chatResult = await streamChat(
-        `Focus only on the document '${document.filename}'. Query: ${text}`,
-        newMessages.map(m => ({ role: m.role, content: m.text }))
+        text,
+        newMessages.map(m => ({ role: m.role, content: m.text })),
+        [],
+        {},
+        undefined,
+        undefined,
+        document.id
       )
       setMessages(prev => [...prev, { role: 'assistant', text: chatResult.text }])
     } catch (err) {
@@ -246,10 +252,20 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
       </div>
 
       {/* Side AI Chat */}
+      {chatOpen ? (
       <div className="w-[400px] border-l glass-dark flex flex-col h-screen sticky top-0">
-        <div className="p-5 border-b border-white/10 flex items-center gap-2">
-          <Brain className="w-5 h-5 text-purple-400" />
-          <h3 className="font-semibold text-white">Ask about this document</h3>
+        <div className="p-5 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Brain className="w-5 h-5 text-purple-400" />
+            <h3 className="font-semibold text-white">Ask about this document</h3>
+          </div>
+          <button
+            onClick={() => setChatOpen(false)}
+            aria-label="Close chat"
+            className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -287,6 +303,15 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
           </form>
         </div>
       </div>
+      ) : (
+        <button
+          onClick={() => setChatOpen(true)}
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center gap-2 px-3 py-4 bg-[#1a1625] border border-white/10 border-r-0 rounded-l-xl text-white/70 hover:text-white hover:bg-[#241f33] transition shadow-lg"
+          aria-label="Open document chat"
+        >
+          <Brain className="w-4 h-4 text-purple-400" />
+        </button>
+      )}
     </div>
   )
 }

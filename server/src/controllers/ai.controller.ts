@@ -13,7 +13,7 @@ export class AIController {
   
   static async chat(req: AuthRequest, res: Response) {
     try {
-      const { query, conversationId, provider, model } = req.body;
+      const { query, conversationId, provider, model, documentId } = req.body;
       const userId = req.user!.userId;
       
       if (!query) {
@@ -46,18 +46,46 @@ export class AIController {
       // 2. Fetch Workspace Memory
       const workspaceContext = await WorkspaceMemory.getRecentContext(userId);
       
-      // 3. Search for Relevant Chunks (if query seems search-worthy, or just do it anyway)
+      // 3. Search for Relevant Chunks (if query seems search-worthy, or just do it anyway).
+      // When documentId is provided, retrieval is scoped to ONLY that file's chunks -
+      // the assistant must never pull in unrelated (or benchmark) documents here.
       let retrievedChunks: any[] = [];
       try {
         const searchResponse = await axios.post(`${AI_SERVICE_URL}/internal/embed/search`, {
           query,
-          limit: 10
+          limit: 10,
+          filters: documentId ? { file_id: documentId } : undefined,
         });
         if (searchResponse.data.success) {
           retrievedChunks = searchResponse.data.results;
         }
       } catch (err) {
         logger.warn('Failed to retrieve semantic chunks for context builder');
+      }
+
+      // 3b. Document-scoped chat must never hallucinate: if we can't find any
+      // indexed chunks belonging to this specific document, say so plainly
+      // instead of asking Gemini to answer from unrelated context.
+      if (documentId && retrievedChunks.length === 0) {
+        const fallbackText = 'This information is not available in the current document.';
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.write(`data: ${fallbackText}\n\n`);
+        res.write('data: [DONE]\n\n');
+
+        const newHistory = [
+          ...history,
+          { role: 'user', content: query },
+          { role: 'assistant', content: fallbackText }
+        ];
+        await prisma.conversation.update({
+          where: { id: convoId },
+          data: { messages: JSON.stringify(newHistory), updatedAt: new Date() }
+        });
+
+        return res.end();
       }
 
       // 4. Setup SSE for streaming response to frontend

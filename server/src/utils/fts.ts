@@ -50,6 +50,15 @@ export const indexFileInFts = async (fileId: string, filename: string, content: 
   }
 };
 
+export const removeFileFromFts = async (fileId: string) => {
+  try {
+    await ensureFtsReady();
+    await prisma.$executeRawUnsafe(`DELETE FROM file_search WHERE file_id = ?`, fileId);
+  } catch (error) {
+    logger.error(`Failed to remove file ${fileId} from FTS: ${error}`);
+  }
+};
+
 export const searchFts = async (query: string, limit: number = 20) => {
   try {
     await ensureFtsReady();
