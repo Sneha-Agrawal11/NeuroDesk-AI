@@ -9,6 +9,7 @@ import { scanQueue } from '../workers/queue';
 import { indexQueue } from '../workers/queue';
 import axios from 'axios';
 import { config } from '../config';
+import { calculateFileHash } from '../utils/hash';
 
 const prisma = new PrismaClient();
 const AI_SERVICE_URL = config.ai.serviceUrl;
@@ -277,30 +278,46 @@ export class WorkspaceController {
       const storedFiles = [];
       let uploadRoot = '';
 
-
-
       for (const file of files) {
         uploadRoot = path.dirname(file.path);
         const ext = path.extname(file.originalname).toLowerCase();
         const mimeType = mime.lookup(file.originalname) || file.mimetype || null;
 
-        const fileRecord = await prisma.fileRecord.upsert({
-          where: { path: file.path },
-          update: {
-            filename: file.originalname,
-            extension: ext,
-            mimeType,
-            sizeBytes: BigInt(file.size),
-            status: 'discovered',
-            projectId: null,
-          },
-          create: {
+        // Content-based dedup: multer gives every upload a unique on-disk
+        // filename (timestamp-prefixed), so matching on `path` alone never
+        // catches re-uploads of the same file. Hash the content instead.
+        const contentHash = await calculateFileHash(file.path);
+        const existing = await prisma.fileRecord.findFirst({
+          where: { contentHash },
+        });
+
+        if (existing) {
+          // Same content already tracked: discard this duplicate upload and
+          // hand back the existing document instead of creating a new one.
+          try {
+            fs.unlinkSync(file.path);
+          } catch (unlinkErr: any) {
+            logger.warn(`Failed to remove duplicate upload file ${file.path}: ${unlinkErr.message}`);
+          }
+
+          storedFiles.push({
+            id: existing.id,
+            filename: existing.filename,
+            path: existing.path,
+            duplicate: true,
+          });
+          continue;
+        }
+
+        const fileRecord = await prisma.fileRecord.create({
+          data: {
             path: file.path,
             filename: file.originalname,
             extension: ext,
             mimeType,
             category: categoryForUpload(ext),
             sizeBytes: BigInt(file.size),
+            contentHash,
             fileModifiedAt: new Date(),
             status: 'discovered',
             projectId: null,
@@ -313,6 +330,7 @@ export class WorkspaceController {
           id: fileRecord.id,
           filename: fileRecord.filename,
           path: fileRecord.path,
+          duplicate: false,
         });
       }
 

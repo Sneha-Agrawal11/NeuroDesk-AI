@@ -15,5 +15,6 @@ router.get('/document/:id/analysis', WorkspaceController.getDocumentAnalysis);
 router.get('/project/:id/analysis', WorkspaceController.getProjectAnalysis);
 router.post('/upload', workspaceUpload.array('files', 200), WorkspaceController.uploadFiles);
 router.post('/scan', WorkspaceController.triggerScan);
+// router.post('/purge-benchmark', WorkspaceController.purgeGeneratedData);
 
 export default router;
