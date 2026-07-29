@@ -53,3 +53,16 @@ const shutdown = () => {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+
+// Safety net: without these, ANY unexpected error anywhere in the app
+// (a bad request, a bug in a route, a rejected promise) kills the entire
+// Node process - meaning the whole backend goes down and every feature
+// stops working until it's manually restarted. Logging and continuing
+// instead keeps the server alive so a single failing request doesn't
+// take everything else down with it.
+process.on('uncaughtException', (err) => {
+  console.error('[Server] Uncaught exception (server kept running):', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled promise rejection (server kept running):', reason);
+});

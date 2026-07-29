@@ -14,6 +14,8 @@ router.get('/documents', WorkspaceController.listDocuments);
 router.get('/document/:id/analysis', WorkspaceController.getDocumentAnalysis);
 router.get('/project/:id/analysis', WorkspaceController.getProjectAnalysis);
 router.post('/upload', workspaceUpload.array('files', 200), WorkspaceController.uploadFiles);
+router.delete('/upload/pending/:pendingId', WorkspaceController.cancelPendingUpload);
+router.post('/upload/pending/:pendingId/confirm', WorkspaceController.confirmPendingUpload);
 router.post('/scan', WorkspaceController.triggerScan);
 // router.post('/purge-benchmark', WorkspaceController.purgeGeneratedData);
 

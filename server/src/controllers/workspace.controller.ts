@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import mime from 'mime-types';
 import { PrismaClient } from '@prisma/client';
 import { AuthRequest } from '../middleware/auth';
@@ -13,6 +14,18 @@ import { calculateFileHash } from '../utils/hash';
 
 const prisma = new PrismaClient();
 const AI_SERVICE_URL = config.ai.serviceUrl;
+
+// Files that are held back pending user confirmation because their content
+// hash matches a document that's already in the workspace. Kept in memory
+// only (no schema change) - cleared on cancel/confirm or server restart.
+type PendingDuplicateUpload = {
+  path: string;
+  filename: string;
+  extension: string;
+  mimeType: string | null;
+  size: number;
+};
+const pendingDuplicateUploads = new Map<string, PendingDuplicateUpload>();
 
 export class WorkspaceController {
 
@@ -276,6 +289,12 @@ export class WorkspaceController {
       }
 
       const storedFiles = [];
+      const duplicates: Array<{
+        pendingId: string;
+        filename: string;
+        existingFilename: string;
+        existingUploadedAt: Date | null;
+      }> = [];
       let uploadRoot = '';
 
       for (const file of files) {
@@ -292,19 +311,22 @@ export class WorkspaceController {
         });
 
         if (existing) {
-          // Same content already tracked: discard this duplicate upload and
-          // hand back the existing document instead of creating a new one.
-          try {
-            fs.unlinkSync(file.path);
-          } catch (unlinkErr: any) {
-            logger.warn(`Failed to remove duplicate upload file ${file.path}: ${unlinkErr.message}`);
-          }
+          // Do NOT index or create a record yet - hold the file on disk and
+          // let the user decide (Cancel = discard, Upload Again = proceed).
+          const pendingId = crypto.randomUUID();
+          pendingDuplicateUploads.set(pendingId, {
+            path: file.path,
+            filename: file.originalname,
+            extension: ext,
+            mimeType,
+            size: file.size,
+          });
 
-          storedFiles.push({
-            id: existing.id,
-            filename: existing.filename,
-            path: existing.path,
-            duplicate: true,
+          duplicates.push({
+            pendingId,
+            filename: file.originalname,
+            existingFilename: existing.filename,
+            existingUploadedAt: existing.indexedAt || existing.fileModifiedAt,
           });
           continue;
         }
@@ -345,13 +367,83 @@ export class WorkspaceController {
         success: true,
         data: {
           uploaded: storedFiles,
+          duplicates,
           sourcePath: uploadRoot,
-          message: 'Files queued for parsing and embedding'
+          message: duplicates.length
+            ? 'Some files already exist in your workspace and are waiting for your confirmation.'
+            : 'Files queued for parsing and embedding'
         }
       });
     } catch (error: any) {
       logger.error(`Upload files error: ${error.message}`);
       return res.status(500).json({ success: false, error: 'Failed to upload files' });
+    }
+  }
+
+  static async cancelPendingUpload(req: AuthRequest, res: Response) {
+    try {
+      const { pendingId } = req.params;
+      const pending = pendingDuplicateUploads.get(pendingId);
+
+      if (!pending) {
+        return res.status(404).json({ success: false, error: 'Pending upload not found' });
+      }
+
+      try {
+        fs.unlinkSync(pending.path);
+      } catch (unlinkErr: any) {
+        logger.warn(`Failed to remove cancelled duplicate upload: ${unlinkErr.message}`);
+      }
+
+      pendingDuplicateUploads.delete(pendingId);
+      return res.json({ success: true });
+    } catch (error: any) {
+      logger.error(`Cancel pending upload error: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Failed to cancel upload' });
+    }
+  }
+
+  static async confirmPendingUpload(req: AuthRequest, res: Response) {
+    try {
+      const { pendingId } = req.params;
+      const pending = pendingDuplicateUploads.get(pendingId);
+
+      if (!pending) {
+        return res.status(404).json({ success: false, error: 'Pending upload not found or already handled' });
+      }
+
+      // User explicitly chose "Upload Again" - proceed through the exact
+      // same create + index path as a brand-new file.
+      const contentHash = await calculateFileHash(pending.path);
+      const fileRecord = await prisma.fileRecord.create({
+        data: {
+          path: pending.path,
+          filename: pending.filename,
+          extension: pending.extension,
+          mimeType: pending.mimeType,
+          category: categoryForUpload(pending.extension),
+          sizeBytes: BigInt(pending.size),
+          contentHash,
+          fileModifiedAt: new Date(),
+          status: 'discovered',
+          projectId: null,
+        }
+      });
+
+      indexQueue.push({ fileId: fileRecord.id });
+      pendingDuplicateUploads.delete(pendingId);
+
+      return res.json({
+        success: true,
+        data: {
+          id: fileRecord.id,
+          filename: fileRecord.filename,
+          path: fileRecord.path,
+        }
+      });
+    } catch (error: any) {
+      logger.error(`Confirm pending upload error: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Failed to confirm upload' });
     }
   }
 }
