@@ -251,6 +251,28 @@ export async function uploadFiles(files: File[]) {
   throw new Error('Upload failed')
 }
 
+export async function cancelPendingUpload(pendingId: string) {
+  const response = await fetch(`${SERVER_BASE_URL}/workspace/upload/pending/${pendingId}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: readToken() ? `Bearer ${readToken()}` : '',
+    },
+  })
+  if (!response.ok) throw new Error('Failed to cancel upload')
+  return response.json()
+}
+
+export async function confirmPendingUpload(pendingId: string) {
+  const response = await fetch(`${SERVER_BASE_URL}/workspace/upload/pending/${pendingId}/confirm`, {
+    method: 'POST',
+    headers: {
+      Authorization: readToken() ? `Bearer ${readToken()}` : '',
+    },
+  })
+  if (!response.ok) throw new Error('Failed to confirm upload')
+  return response.json()
+}
+
 export async function searchWorkspace(query: string, mode: 'hybrid' | 'keyword' | 'semantic' = 'hybrid', limit = 10) {
   try {
     const response = await apiRequest<ApiSuccess<unknown[]> | ApiFailure>('/search', {
