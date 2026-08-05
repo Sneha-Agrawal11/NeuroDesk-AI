@@ -6,7 +6,7 @@ import { Search, Sparkles, Settings, LogOut, Mic, Paperclip, Send, X, Brain, Fil
 import { Button } from '@/components/ui/button'
 import ProjectWorkspace from './ProjectWorkspace'
 import WorkspacePermission from './WorkspacePermission'
-import { clearSession, getProjects, getDocuments, getStoredSession, searchWorkspace, streamChat, triggerWorkspaceScan, uploadFiles, cancelPendingUpload, confirmPendingUpload, type ProjectSummary, type DocumentSummary } from '@/lib/api'
+import { clearSession, getProjects, getDocuments, getStoredSession, searchWorkspace, streamChat, triggerWorkspaceScan, uploadFiles, cancelPendingUpload, confirmPendingUpload, grantDefaultFolders, type ProjectSummary, type DocumentSummary } from '@/lib/api'
 import DocumentWorkspace from './DocumentWorkspace'
 
 type ChatMessage = { role: 'user' | 'assistant'; text: string }
@@ -498,7 +498,19 @@ export default function MainWorkspace() {
   if (showPermissions) {
     return (
       <div className="min-h-screen bg-desktop">
-        <WorkspacePermission onContinue={async () => setShowPermissions(false)} />
+        <WorkspacePermission
+          onContinue={async (folders: string[]) => {
+            try {
+              await grantDefaultFolders(folders)
+              setUploadToast({ type: 'success', message: 'Scanning your granted folders...' })
+              setTimeout(() => setUploadToast(null), 3000)
+            } catch (e) {
+              console.warn('Failed to grant folders', e)
+            } finally {
+              setShowPermissions(false)
+            }
+          }}
+        />
       </div>
     )
   }
@@ -693,7 +705,7 @@ export default function MainWorkspace() {
                 >
                   <div className="flex items-start justify-between">
                     <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 text-2xl">
-                      📁
+                      ðŸ“
                     </div>
                   </div>
                   <div>

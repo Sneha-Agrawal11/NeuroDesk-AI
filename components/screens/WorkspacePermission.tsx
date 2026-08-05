@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Folder, HardDrive, Download, Image, Code, Check, ShieldCheck, Cloud, GitBranch } from 'lucide-react'
 
 interface WorkspacePermissionProps {
-  onContinue: () => void | Promise<void>
+  onContinue: (folders: string[]) => void | Promise<void>
 }
 
 interface PermissionItem {
@@ -40,7 +40,10 @@ export default function WorkspacePermission({ onContinue }: WorkspacePermissionP
   const handleGrantAndContinue = async () => {
     setIsSubmitting(true)
     try {
-      await onContinue()
+      const enabledFolders = permissions
+        .filter(p => p.enabled && !p.isOptional)
+        .map(p => p.id)
+      await onContinue(enabledFolders)
     } catch (err) {
       console.error("Error setting permissions:", err)
     } finally {

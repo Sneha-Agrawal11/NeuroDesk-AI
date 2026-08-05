@@ -1,4 +1,7 @@
 import os
+# Disable ChromaDB noisy telemetry warnings at the very start
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -37,8 +40,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(graph_router, prefix="/api")
 app.include_router(ml_router, prefix="/api")
 
-# The Node service calls these internal routes directly.  Keeping both prefixes
-# maintains compatibility with the desktop client without fabricating responses.
+# Node service internal routes
 app.include_router(embed_router)
 app.include_router(parse_router)
 app.include_router(chat_router)

@@ -3,12 +3,19 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { ChevronLeft, Brain, Send, FileText, FileSearch, Sparkles, Image as ImageIcon, X } from 'lucide-react'
-import { type DocumentSummary, streamChat, getStoredSession, searchWorkspace } from '@/lib/api'
+import { type DocumentSummary, streamChat, getStoredSession, searchWorkspace, getDocumentFileUrl } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
 interface DocumentWorkspaceProps {
   document: DocumentSummary
   onBack: () => void
+}
+
+function getPreviewKind(filename: string): 'pdf' | 'image' | 'other' {
+  const ext = filename.split('.').pop()?.toLowerCase() || ''
+  if (ext === 'pdf') return 'pdf'
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'image'
+  return 'other'
 }
 
 export default function DocumentWorkspace({ document, onBack }: DocumentWorkspaceProps) {
@@ -19,6 +26,10 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [chatOpen, setChatOpen] = useState(true)
+  const [previewFailed, setPreviewFailed] = useState(false)
+
+  const previewKind = getPreviewKind(document.filename)
+  const fileUrl = getDocumentFileUrl(document.id)
 
   useEffect(() => {
     // Fetch real analysis from backend
@@ -216,17 +227,61 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
             </div>
           </div>
 
+          {/* Original File Preview - never forces a download to disk */}
+          {!previewFailed && (
+            <div className="mb-10 rounded-2xl overflow-hidden border bg-white/60">
+              {previewKind === 'pdf' && (
+                <iframe
+                  src={fileUrl}
+                  title={document.filename}
+                  className="w-full h-[70vh]"
+                  onError={() => setPreviewFailed(true)}
+                />
+              )}
+              {previewKind === 'image' && (
+                <img
+                  src={fileUrl}
+                  alt={document.filename}
+                  className="w-full max-h-[70vh] object-contain bg-black/5"
+                  onError={() => setPreviewFailed(true)}
+                />
+              )}
+              {previewKind === 'other' && (
+                <div className="p-6">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Quick preview</p>
+                  <p className="text-sm text-foreground/80 whitespace-pre-wrap max-h-64 overflow-y-auto">
+                    {loading
+                      ? 'Loading preview...'
+                      : (analysis?.summary || 'Preview not available for this file type. Use "Ask about this document" to explore its contents.')}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {loading ? (
             <div className="flex items-center justify-center p-20">
               <div className="animate-spin w-8 h-8 border-4 border-purple-500 border-t-transparent rounded-full"></div>
             </div>
           ) : (
             <div>
+              <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-500" />
+                AI Analysis
+              </h2>
+              {analysis?.aiUnavailable && (
+                <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                  Full AI analysis is temporarily unavailable, so we're showing an extracted text preview instead. You can still ask questions in the chat panel.
+                </div>
+              )}
               {document.category === 'resume' && renderResumeAnalysis()}
               {(document.category === 'assignment' || document.category === 'document') && renderAssignmentAnalysis()}
               {document.category === 'research_paper' && renderResearchPaperAnalysis()}
               {document.category === 'invoice' && renderInvoiceAnalysis()}
               {document.category === 'image' && renderImageAnalysis()}
+              {!['resume', 'assignment', 'document', 'research_paper', 'invoice', 'image'].includes(document.category) && (
+                renderSection('Summary', analysis?.summary)
+              )}
               
               {/* Related Knowledge Section */}
               <div className="mt-10">
