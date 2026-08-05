@@ -9,6 +9,7 @@ router.use(authenticate);
 router.get('/', PermissionsController.getPermissions);
 router.put('/:id', PermissionsController.togglePermission);
 router.post('/add', PermissionsController.addPermission);
+router.post('/grant-defaults', PermissionsController.grantDefaultFolders);
 router.delete('/:id', PermissionsController.removePermission);
 
 export default router;
