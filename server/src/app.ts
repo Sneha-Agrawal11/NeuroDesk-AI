@@ -6,7 +6,18 @@ import compression from 'compression';
 const app = express();
 
 // Security and compression middlewares
-app.use(helmet());
+// Default helmet CSP sets `frame-ancestors 'self'`, which blocks the
+// frontend (localhost:3000) from embedding a file-preview <iframe> pointed
+// at this backend (localhost:3001) - different origin, so 'self' doesn't
+// match. Explicitly allow the frontend origin to frame us.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      'frame-ancestors': ["'self'", 'http://localhost:3000', 'http://127.0.0.1:3000'],
+    },
+  },
+}));
 app.use(cors({
   origin: [
     process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000',

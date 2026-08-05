@@ -128,6 +128,25 @@ async function apiRequest<T>(path: string, init: RequestInit = {}, includeAuth =
     headers,
   })
 
+  // Automatic token cleanup and session reset on 401 Unauthorized
+  if (response.status === 401) {
+    clearSession()
+    if (typeof window !== 'undefined' && !path.includes('/auth/dev-session')) {
+      // Refresh session automatically if expired token was sent
+      await ensureDevSession()
+      // Retry request once with fresh token
+      const freshToken = readToken()
+      if (freshToken) {
+        headers.set('Authorization', `Bearer ${freshToken}`)
+        const retryResponse = await fetch(`${SERVER_BASE_URL}${path}`, { ...init, headers })
+        const retryPayload = retryResponse.headers.get('content-type')?.includes('application/json')
+          ? await retryResponse.json()
+          : await retryResponse.text()
+        if (retryResponse.ok) return retryPayload as T
+      }
+    }
+  }
+
   const contentType = response.headers.get('content-type') || ''
   const payload = contentType.includes('application/json') ? await response.json() : await response.text()
 
@@ -194,6 +213,25 @@ export async function addPermission(path: string, label: string) {
   } catch (e) {
     throw e
   }
+}
+
+export async function grantDefaultFolders(folders: string[]) {
+  try {
+    const response = await apiRequest<ApiSuccess<{ granted: PermissionRecord[]; skipped: string[]; jobId: string }> | ApiFailure>('/permissions/grant-defaults', {
+      method: 'POST',
+      body: JSON.stringify({ folders }),
+    })
+    if ('success' in response && response.success) return response.data
+    throw new Error('Failed to grant folders')
+  } catch (e) {
+    throw e
+  }
+}
+
+// Builds a URL that renders/streams a document's original file content
+export function getDocumentFileUrl(documentId: string): string {
+  const token = readToken()
+  return `${SERVER_BASE_URL}/workspace/document/${documentId}/file${token ? `?token=${encodeURIComponent(token)}` : ''}`
 }
 
 export async function triggerWorkspaceScan() {

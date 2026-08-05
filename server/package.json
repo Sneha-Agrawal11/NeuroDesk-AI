@@ -13,7 +13,8 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "cleanup:benchmark": "tsx scripts/cleanupBenchmarkData.ts",
-    "backfill:hash": "tsx scripts/backfillContentHash.ts"
+    "backfill:hash": "tsx scripts/backfillContentHash.ts",
+    "cleanup:self-scan": "tsx scripts/cleanupSelfScannedFiles.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

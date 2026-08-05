@@ -56,21 +56,14 @@ export const processMlJob = async (job: any) => {
         });
       }
       
-      // Request deep analysis for summary
-      const analyzeRes = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {
-        filename: fileRecord.filename,
-        category: detectedCategory,
-        content: textContent
-      });
-      
-      if (analyzeRes.data.success && analyzeRes.data.analysis?.summary) {
-        await prisma.fileRecord.update({
-          where: { id: fileId },
-          data: { aiSummary: analyzeRes.data.analysis.summary }
-        });
-      }
+      // Note: full deep AI analysis (summary, ATS score, etc.) is intentionally
+      // NOT run here. Background indexing stays lightweight - metadata,
+      // embeddings, classification only - so bulk scans of hundreds/
+      // thousands of files stay fast and don't hammer the AI provider's rate
+      // limits. Full analysis runs on demand instead, the moment the user
+      // opens a document (see getDocumentAnalysis), reusing the same pipeline.
     } catch (err: any) {
-      logger.warn(`ML Classification/Analysis failed for ${fileId}: ${err.message}`);
+      logger.warn(`ML Classification failed for ${fileId}: ${err.message}`);
     }
 
     // 2. Knowledge Graph Extraction
