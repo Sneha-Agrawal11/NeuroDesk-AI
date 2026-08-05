@@ -1,3 +1,14 @@
+import path from 'path';
+
+// The app's own project root (wherever it's cloned/installed). No matter
+// which folder names get added below, files that live inside NeuroDesk's
+// own installation directory (its upload storage, ChromaDB data, node
+// modules, fix scripts downloaded to Downloads, etc.) should never be
+// treated as user content - if a permitted folder (e.g. "Projects" or
+// "Downloads") happens to contain files related to this app itself, this
+// stops it from indexing itself and polluting search results.
+const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
+
 export const DEFAULT_EXCLUSIONS = [
   // Directories
   'node_modules',
@@ -23,7 +34,12 @@ export const DEFAULT_EXCLUSIONS = [
   'vendor', // PHP/Go
   'benchmark_data',
   'benchmark_data_large',
-  
+  'chromadb',
+  'chroma_db',
+  'My Music',
+  'My Videos',
+  'My Pictures',
+
   // Files
   '.DS_Store',
   'Thumbs.db',
@@ -55,9 +71,27 @@ export const DEFAULT_EXCLUSIONS = [
   '*.7z',
   '*.sqlite',
   '*.db',
+  // Dev/ops scripts - not user documents, common in Downloads while
+  // debugging this very app
+  '*.ps1',
+  '*.psm1',
+  '*.bat',
+  '*.cmd',
+  '*.sh',
 ];
 
 export const isExcluded = (filePath: string): boolean => {
+  // Never scan/index/watch anything inside the app's own installation
+  // directory - it should never be treated as user content.
+  try {
+    const resolved = path.resolve(filePath);
+    if (resolved === APP_ROOT || resolved.startsWith(APP_ROOT + path.sep)) {
+      return true;
+    }
+  } catch {
+    // fall through to name-based checks
+  }
+
   // Basic check against excluded names or extensions
   for (const exclusion of DEFAULT_EXCLUSIONS) {
     if (exclusion.startsWith('*.')) {

@@ -13,15 +13,15 @@ export class AIController {
   
   static async chat(req: AuthRequest, res: Response) {
     try {
-      const { query, conversationId, provider, model, documentId } = req.body;
+      const { query, conversationId, provider, model, documentId, history: frontendHistory } = req.body;
       const userId = req.user!.userId;
       
       if (!query) {
         return res.status(400).json({ success: false, error: 'Query is required' });
       }
 
-      // 1. Fetch Conversation History
-      let history: any[] = [];
+      // 1. Resolve Conversation ID & History
+      let history: any[] = Array.isArray(frontendHistory) ? frontendHistory : [];
       let convoId = conversationId;
       
       if (convoId) {
@@ -95,17 +95,25 @@ export class AIController {
       
       // Stream from AI Service
       logger.info(`Proxying chat to ${AI_SERVICE_URL}/internal/chat/stream, provider=${provider || 'default'}, model=${model || 'default'}`);
-      const streamReq = await axios.post(`${AI_SERVICE_URL}/internal/chat/stream`, {
+      
+      // Serialize safely to prevent any BigInt or circular reference crashes inside Axios
+      const safePayload = JSON.parse(JSON.stringify({
         query,
         history,
         retrieved_chunks: retrievedChunks,
         workspace_context: workspaceContext,
         provider,
         model
-      }, {
+      }, (_, v) => typeof v === 'bigint' ? v.toString() : v));
+
+      const streamReq = await axios.post(`${AI_SERVICE_URL}/internal/chat/stream`, safePayload, {
         responseType: 'stream',
         timeout: 120000, // 2 minutes to prevent premature connection close
       });
+      
+      if (!streamReq.data || typeof streamReq.data.on !== 'function') {
+        throw new Error('Upstream AI service did not return a valid stream');
+      }
       
       let fullResponse = '';
       let buffer = '';
@@ -140,32 +148,36 @@ export class AIController {
           }
         }
 
-        // 5. Update Conversation History
-        const newHistory = [
-          ...history,
-          { role: 'user', content: query },
-          { role: 'assistant', content: fullResponse }
-        ];
-        
-        await prisma.conversation.update({
-          where: { id: convoId },
-          data: {
-            messages: JSON.stringify(newHistory),
-            updatedAt: new Date()
+        try {
+          // 5. Update Conversation History
+          const newHistory = [
+            ...history,
+            { role: 'user', content: query },
+            { role: 'assistant', content: fullResponse }
+          ];
+          
+          await prisma.conversation.update({
+            where: { id: convoId },
+            data: {
+              messages: JSON.stringify(newHistory),
+              updatedAt: new Date()
+            }
+          });
+          
+          // Trigger background summary job if history is too long
+          if (newHistory.length > 10) {
+            try {
+              const { mlQueue } = await import('../workers/queue');
+              mlQueue.push({ type: 'summary', conversationId: convoId });
+            } catch (err) {
+              logger.warn('Failed to enqueue summary job');
+            }
           }
-        });
-        
-        // Trigger background summary job if history is too long
-        if (newHistory.length > 10) {
-          try {
-            const { mlQueue } = await import('../workers/queue');
-            mlQueue.push({ type: 'summary', conversationId: convoId });
-          } catch (err) {
-            logger.warn('Failed to enqueue summary job');
-          }
+        } catch (error: any) {
+          logger.error(`Failed to update conversation history: ${error.message}`);
+        } finally {
+          res.end();
         }
-        
-        res.end();
       });
 
       streamReq.data.on('error', (err: any) => {

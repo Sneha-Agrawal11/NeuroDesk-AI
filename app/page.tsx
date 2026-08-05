@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ensureDevSession, getWorkspaceStatus, addPermission, triggerWorkspaceScan, type WorkspaceStatus } from '@/lib/api'
+import { ensureDevSession, getWorkspaceStatus, grantDefaultFolders, type WorkspaceStatus } from '@/lib/api'
 import WelcomeScreen from '@/components/screens/WelcomeScreen'
 import WorkspacePermission from '@/components/screens/WorkspacePermission'
 import WorkspaceBuilder from '@/components/screens/WorkspaceBuilder'
@@ -40,14 +40,15 @@ export default function Page() {
     return () => { cancelled = true }
   }, [])
 
-  const handlePermissionsGranted = async () => {
+  const handlePermissionsGranted = async (folders: string[]) => {
     // Direct transition to Builder screen without blocking UI
     setScreen('builder')
 
     try {
       await ensureDevSession().catch(() => {})
-      await addPermission('default', 'Default Workspace').catch(() => {})
-      await triggerWorkspaceScan().catch(() => {})
+      await grantDefaultFolders(folders).catch((e) => {
+        console.warn('Failed to grant workspace folders', e)
+      })
     } catch (e) {
       console.warn("Backend API scanning triggered in background", e)
     }
