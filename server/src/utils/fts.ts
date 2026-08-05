@@ -63,19 +63,29 @@ export const searchFts = async (query: string, limit: number = 20) => {
   try {
     await ensureFtsReady();
 
-    // FTS MATCH syntax is not natural-language syntax. Convert user input into
-    // individual prefix terms so punctuation and phrases cannot break the query.
-    const terms = query.match(/[\p{L}\p{N}_-]+/gu) || [];
+    // Strip common stop-words so "find my resume pdf" becomes ["resume", "pdf"]
+    const stopWords = new Set(['find', 'my', 'get', 'show', 'me', 'the', 'a', 'an', 'for', 'search', 'where', 'is', 'document', 'file', 'files', 'all', 'of', 'in', 'to']);
+    const terms = (query.match(/[\p{L}\p{N}_-]+/gu) || [])
+      .filter(t => !stopWords.has(t.toLowerCase()) && t.length > 1);
     if (!terms.length) return [];
-    const safeQuery = terms.map(term => `"${term.replace(/"/g, '')}"*`).join(' OR ');
+
+    // Use AND logic: ALL terms must appear (as prefix matches) in the row.
+    // This prevents "resume OR pdf" from returning every PDF in the workspace.
+    const safeQuery = terms.map(term => `"${term.replace(/"/g, '')}"*`).join(' AND ');
+
+    // BM25 column weights: file_id(0), filename(10), content(1), category(5)
+    // Filename matches are weighted 10x higher than content matches so a file
+    // literally named "resume" outranks one that merely mentions the word.
     const results = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT file_id, filename, category, bm25(file_search) AS rank 
-       FROM file_search 
-       WHERE file_search MATCH ? 
+      `SELECT file_id, filename, category,
+              snippet(file_search, 2, '<b>', '</b>', '...', 30) AS snippet,
+              bm25(file_search, 0.0, 10.0, 1.0, 5.0) AS rank
+       FROM file_search
+       WHERE file_search MATCH ?
        ORDER BY rank LIMIT ?`,
       safeQuery, limit
     );
-    
+
     return results;
   } catch (error) {
     logger.error(`FTS search failed for query "${query}": ${error}`);
