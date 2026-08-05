@@ -53,7 +53,7 @@ export class WorkspaceController {
     try {
       const userId = req.user!.userId;
 
-      const workspace = await prisma.workspace.findUnique({
+      let workspace = await prisma.workspace.findUnique({
         where: { userId },
         include: {
           scanJobs: {
@@ -64,7 +64,15 @@ export class WorkspaceController {
       });
 
       if (!workspace) {
-        return res.status(404).json({ success: false, error: 'Workspace not found' });
+        workspace = await prisma.workspace.create({
+          data: {
+            userId,
+            status: 'created'
+          },
+          include: {
+            scanJobs: true
+          }
+        });
       }
 
       return res.json({ success: true, data: workspace });
@@ -170,6 +178,41 @@ export class WorkspaceController {
     }
   }
 
+  static async serveDocumentFile(req: AuthRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const fileRecord = await prisma.fileRecord.findUnique({ where: { id } });
+
+      if (!fileRecord) {
+        return res.status(404).json({ success: false, error: 'Document not found' });
+      }
+
+      if (!fs.existsSync(fileRecord.path)) {
+        return res.status(404).json({ success: false, error: 'File no longer exists on disk' });
+      }
+
+      const mimeType = fileRecord.mimeType || mime.lookup(fileRecord.path) || 'application/octet-stream';
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileRecord.filename)}"`);
+      // Override the global CSP for this response - it's already scoped to
+      // just this route and the frontend origin via app.ts, but being
+      // explicit here too since this endpoint is what gets framed.
+      res.removeHeader('X-Frame-Options');
+
+      const stream = fs.createReadStream(fileRecord.path);
+      stream.on('error', (err) => {
+        logger.error(`Failed to stream file ${fileRecord.path}: ${err.message}`);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: 'Failed to read file' });
+        }
+      });
+      stream.pipe(res);
+    } catch (error: any) {
+      logger.error(`Serve document file error: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Failed to serve file' });
+    }
+  }
+
   static async getDocumentAnalysis(req: AuthRequest, res: Response) {
     try {
       const fileId = String(req.params.id);
@@ -192,23 +235,38 @@ export class WorkspaceController {
       }
 
       // Call AI service for deep analysis
-      const response = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {
-        content: fileRecord.extractedText,
-        category: fileRecord.aiCategory || fileRecord.category,
-        filename: fileRecord.filename
-      });
-
-      if (response.data && response.data.success) {
-        await prisma.aICache.upsert({
-          where: { cacheKey },
-          update: { value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' },
-          create: { cacheType: 'analysis', cacheKey, value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' }
+      try {
+        const response = await axios.post(`${AI_SERVICE_URL}/internal/ml/deep_analyze`, {
+          content: fileRecord.extractedText,
+          category: fileRecord.aiCategory || fileRecord.category,
+          filename: fileRecord.filename
         });
-        await prisma.fileRecord.update({ where: { id: fileRecord.id }, data: { lastAnalyzedAt: new Date() } });
-        return res.json({ success: true, data: response.data.analysis });
+
+        if (response.data && response.data.success) {
+          await prisma.aICache.upsert({
+            where: { cacheKey },
+            update: { value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' },
+            create: { cacheType: 'analysis', cacheKey, value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' }
+          });
+          await prisma.fileRecord.update({ where: { id: fileRecord.id }, data: { lastAnalyzedAt: new Date() } });
+          return res.json({ success: true, data: response.data.analysis });
+        }
+      } catch (analyzeErr: any) {
+        logger.warn(`Deep analyze failed for ${fileRecord.id}, falling back to extracted text: ${analyzeErr.message}`);
       }
 
-      return res.status(500).json({ success: false, error: 'AI analysis failed' });
+      // AI analysis didn't come back (provider error, rate limit, etc.) -
+      // never leave the page blank. Fall back to a plain-text preview built
+      // from what was already parsed and indexed, clearly labelled so the
+      // user knows this isn't the full AI analysis.
+      const fallbackSummary = fileRecord.extractedText.slice(0, 800);
+      return res.json({
+        success: true,
+        data: {
+          summary: fallbackSummary,
+          aiUnavailable: true,
+        }
+      });
 
     } catch (error: any) {
       logger.error(`Document analysis error: ${error.message}`);
