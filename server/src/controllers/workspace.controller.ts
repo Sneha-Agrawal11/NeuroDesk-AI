@@ -2,6 +2,7 @@ import { Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { exec } from 'child_process';
 import mime from 'mime-types';
 import { PrismaClient } from '@prisma/client';
 import { AuthRequest } from '../middleware/auth';
@@ -213,6 +214,79 @@ export class WorkspaceController {
     }
   }
 
+  static async openDocumentNative(req: AuthRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const fileRecord = await prisma.fileRecord.findUnique({ where: { id } });
+
+      if (!fileRecord) {
+        return res.status(404).json({ success: false, error: 'Document not found' });
+      }
+
+      if (!fs.existsSync(fileRecord.path)) {
+        return res.status(404).json({ success: false, error: 'File no longer exists on disk' });
+      }
+
+      // NeuroDesk is local-first: the server and the browser are on the same
+      // PC. So "Open Original" launches the file with whatever app Windows
+      // already has associated with it (PowerPoint, Photos, Acrobat, etc.) -
+      // exactly like double-clicking it in File Explorer. This never streams
+      // the file through the browser, so Chrome never saves a "download"
+      // copy and no duplicate file is ever created.
+      const filePath = fileRecord.path;
+      let command: string;
+      if (process.platform === 'win32') {
+        // /c start "" "<path>" - the empty "" is the required window-title arg
+        command = `start "" "${filePath}"`;
+      } else if (process.platform === 'darwin') {
+        command = `open "${filePath}"`;
+      } else {
+        command = `xdg-open "${filePath}"`;
+      }
+
+      exec(command, { shell: process.platform === 'win32' ? 'cmd.exe' : undefined }, (err) => {
+        if (err) {
+          logger.error(`Failed to open file natively (${filePath}): ${err.message}`);
+        }
+      });
+
+      return res.json({ success: true });
+    } catch (error: any) {
+      logger.error(`Open document native error: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Failed to open file' });
+    }
+  }
+
+  static async reindexByCategory(req: AuthRequest, res: Response) {
+    try {
+      const { category } = req.body;
+      if (!category) {
+        return res.status(400).json({ success: false, error: 'category is required' });
+      }
+
+      const files = await prisma.fileRecord.findMany({
+        where: { OR: [{ category }, { aiCategory: category }] },
+        select: { id: true }
+      });
+
+      for (const f of files) {
+        // Clear the stored extraction/analysis so getDocumentAnalysis doesn't
+        // serve a cached (pre-fix) result, then re-queue for parsing.
+        await prisma.fileRecord.update({
+          where: { id: f.id },
+          data: { extractedText: null, aiCategory: null, status: 'discovered' }
+        });
+        await prisma.aICache.deleteMany({ where: { cacheKey: { contains: f.id } } });
+        indexQueue.push({ fileId: f.id });
+      }
+
+      return res.json({ success: true, data: { queued: files.length } });
+    } catch (error: any) {
+      logger.error(`Reindex by category error: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Failed to reindex' });
+    }
+  }
+
   static async getDocumentAnalysis(req: AuthRequest, res: Response) {
     try {
       const fileId = String(req.params.id);
@@ -229,9 +303,10 @@ export class WorkspaceController {
       }
 
       const cacheKey = `analysis:${fileRecord.id}:${fileRecord.contentHash || fileRecord.indexedAt?.getTime() || 'current'}`;
+      const extractedTextPreview = fileRecord.extractedText.slice(0, 4000);
       const cached = await prisma.aICache.findUnique({ where: { cacheKey } });
       if (cached) {
-        return res.json({ success: true, data: JSON.parse(cached.value) });
+        return res.json({ success: true, data: { ...JSON.parse(cached.value), extractedTextPreview } });
       }
 
       // Call AI service for deep analysis
@@ -249,7 +324,7 @@ export class WorkspaceController {
             create: { cacheType: 'analysis', cacheKey, value: JSON.stringify(response.data.analysis), contentHash: fileRecord.contentHash || '' }
           });
           await prisma.fileRecord.update({ where: { id: fileRecord.id }, data: { lastAnalyzedAt: new Date() } });
-          return res.json({ success: true, data: response.data.analysis });
+          return res.json({ success: true, data: { ...response.data.analysis, extractedTextPreview } });
         }
       } catch (analyzeErr: any) {
         logger.warn(`Deep analyze failed for ${fileRecord.id}, falling back to extracted text: ${analyzeErr.message}`);
@@ -259,11 +334,11 @@ export class WorkspaceController {
       // never leave the page blank. Fall back to a plain-text preview built
       // from what was already parsed and indexed, clearly labelled so the
       // user knows this isn't the full AI analysis.
-      const fallbackSummary = fileRecord.extractedText.slice(0, 800);
       return res.json({
         success: true,
         data: {
-          summary: fallbackSummary,
+          summary: extractedTextPreview.slice(0, 800),
+          extractedTextPreview,
           aiUnavailable: true,
         }
       });

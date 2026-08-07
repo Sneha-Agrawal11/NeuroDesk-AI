@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { ChevronLeft, Brain, Send, FileText, FileSearch, Sparkles, Image as ImageIcon, X } from 'lucide-react'
+import { ChevronLeft, Brain, Send, FileText, FileSearch, Sparkles, Image as ImageIcon, X, ExternalLink, ZoomIn, ZoomOut } from 'lucide-react'
 import { type DocumentSummary, streamChat, getStoredSession, searchWorkspace, getDocumentFileUrl } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
@@ -11,11 +11,47 @@ interface DocumentWorkspaceProps {
   onBack: () => void
 }
 
-function getPreviewKind(filename: string): 'pdf' | 'image' | 'other' {
+type PreviewKind = 'pdf' | 'image' | 'text' | 'csv' | 'unrenderable'
+
+const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'json', 'js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'cs', 'go', 'rs', 'html', 'css', 'yml', 'yaml', 'log'])
+
+function getPreviewKind(filename: string): PreviewKind {
   const ext = filename.split('.').pop()?.toLowerCase() || ''
   if (ext === 'pdf') return 'pdf'
   if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'image'
-  return 'other'
+  if (ext === 'csv') return 'csv'
+  if (TEXT_EXTENSIONS.has(ext)) return 'text'
+  // docx, pptx, xlsx, doc, ppt, xls and anything else can't be rendered
+  // natively in a browser - show the extracted-text preview + Open Original.
+  return 'unrenderable'
+}
+
+function renderCsvTable(text: string) {
+  const rows = text.split('\n').filter(Boolean).slice(0, 100).map(row => row.split(' | '))
+  if (!rows.length) return null
+  const [header, ...body] = rows
+  return (
+    <div className="overflow-auto max-h-[70vh]">
+      <table className="w-full text-sm border-collapse">
+        <thead className="sticky top-0 bg-white/95">
+          <tr>
+            {header.map((h, i) => (
+              <th key={i} className="text-left font-semibold border-b border-black/10 px-3 py-2 whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, ri) => (
+            <tr key={ri} className={ri % 2 === 0 ? 'bg-black/[0.02]' : ''}>
+              {row.map((cell, ci) => (
+                <td key={ci} className="px-3 py-1.5 border-b border-black/5 whitespace-nowrap">{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export default function DocumentWorkspace({ document, onBack }: DocumentWorkspaceProps) {
@@ -27,6 +63,23 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
   const [isSending, setIsSending] = useState(false)
   const [chatOpen, setChatOpen] = useState(true)
   const [previewFailed, setPreviewFailed] = useState(false)
+  const [imageZoomed, setImageZoomed] = useState(false)
+  const [openingOriginal, setOpeningOriginal] = useState(false)
+
+  const handleOpenOriginal = async () => {
+    setOpeningOriginal(true)
+    try {
+      const token = getStoredSession()?.token
+      await fetch(`http://localhost:3001/api/workspace/document/${document.id}/open`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+    } catch (err) {
+      console.error('Failed to open original file', err)
+    } finally {
+      setTimeout(() => setOpeningOriginal(false), 1200)
+    }
+  }
 
   const previewKind = getPreviewKind(document.filename)
   const fileUrl = getDocumentFileUrl(document.id)
@@ -182,6 +235,30 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
     </div>
   )
 
+  const renderPresentationAnalysis = () => (
+    <div className="grid grid-cols-1 gap-6">
+      {renderSection('Slide Summary', analysis?.slideSummary)}
+      {renderSection('Important Topics', analysis?.importantTopics, true)}
+      {renderSection('Key Points', analysis?.keyPoints, true)}
+    </div>
+  )
+
+  const renderCertificateAnalysis = () => (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div>
+        {renderSection('Details', {
+          Issuer: analysis?.issuer,
+          Candidate: analysis?.candidate,
+          'Completion Date': analysis?.completionDate,
+        })}
+      </div>
+      <div>
+        {renderSection('Summary', analysis?.summary)}
+        {renderSection('Additional Details', analysis?.details, true)}
+      </div>
+    </div>
+  )
+
   const renderImageAnalysis = () => (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div>
@@ -202,7 +279,7 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto">
         <div className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur-md">
-          <div className="max-w-5xl mx-auto px-8 py-5 flex items-center justify-between">
+          <div className="max-w-6xl mx-auto px-8 py-5 flex items-center justify-between">
             <button onClick={onBack} className="flex items-center gap-2 p-2 hover:bg-black/5 rounded-lg transition text-muted-foreground">
               <ChevronLeft className="w-5 h-5" />
               <span className="font-medium">Back</span>
@@ -214,7 +291,7 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
           </div>
         </div>
         
-        <div className="max-w-5xl mx-auto px-8 py-10">
+        <div className="max-w-6xl mx-auto px-8 py-10">
           <div className="mb-10">
             <div className="flex items-center gap-4 mb-4">
               <div className="w-12 h-12 rounded-xl bg-purple-100 flex items-center justify-center text-purple-600">
@@ -227,32 +304,86 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
             </div>
           </div>
 
-          {/* Original File Preview - never forces a download to disk */}
+          {/* Original File Preview - never forces a download, never copies the file */}
           {!previewFailed && (
             <div className="mb-10 rounded-2xl overflow-hidden border bg-white/60">
+              <div className="flex items-center justify-between px-4 py-2 border-b bg-white/70">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Original File</p>
+                <div className="flex items-center gap-2">
+                  {previewKind === 'image' && (
+                    <button
+                      onClick={() => setImageZoomed(z => !z)}
+                      className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg hover:bg-black/5 transition text-muted-foreground"
+                    >
+                      {imageZoomed ? <ZoomOut className="w-3.5 h-3.5" /> : <ZoomIn className="w-3.5 h-3.5" />}
+                      {imageZoomed ? 'Fit to screen' : 'Zoom in'}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleOpenOriginal}
+                    disabled={openingOriginal}
+                    className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg hover:bg-black/5 transition text-muted-foreground disabled:opacity-50"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    {openingOriginal ? 'Opening...' : 'Open Original'}
+                  </button>
+                </div>
+              </div>
+
               {previewKind === 'pdf' && (
                 <iframe
                   src={fileUrl}
                   title={document.filename}
-                  className="w-full h-[70vh]"
+                  className="w-full h-[88vh]"
                   onError={() => setPreviewFailed(true)}
                 />
               )}
+
               {previewKind === 'image' && (
-                <img
-                  src={fileUrl}
-                  alt={document.filename}
-                  className="w-full max-h-[70vh] object-contain bg-black/5"
-                  onError={() => setPreviewFailed(true)}
-                />
+                <div className={imageZoomed ? 'overflow-auto max-h-[88vh] bg-black/5' : 'bg-black/5'}>
+                  <img
+                    src={fileUrl}
+                    alt={document.filename}
+                    onClick={() => setImageZoomed(z => !z)}
+                    className={imageZoomed
+                      ? 'max-w-none cursor-zoom-out'
+                      : 'w-full max-h-[80vh] object-contain cursor-zoom-in'}
+                    onError={() => setPreviewFailed(true)}
+                  />
+                </div>
               )}
-              {previewKind === 'other' && (
+
+              {previewKind === 'csv' && (
+                <div className="p-2">
+                  {loading ? (
+                    <p className="text-sm text-muted-foreground p-4">Loading preview...</p>
+                  ) : analysis?.extractedTextPreview ? (
+                    renderCsvTable(analysis.extractedTextPreview)
+                  ) : (
+                    <p className="text-sm text-muted-foreground p-4">Preview not available yet. Use "Ask about this document" to explore its contents.</p>
+                  )}
+                </div>
+              )}
+
+              {previewKind === 'text' && (
+                <div className="p-5 max-h-[75vh] overflow-y-auto">
+                  {loading ? (
+                    <p className="text-sm text-muted-foreground">Loading preview...</p>
+                  ) : (
+                    <pre className="text-sm text-foreground/85 whitespace-pre-wrap font-mono leading-relaxed">
+                      {analysis?.extractedTextPreview || 'Preview not available for this file yet.'}
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              {previewKind === 'unrenderable' && (
                 <div className="p-6">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Quick preview</p>
-                  <p className="text-sm text-foreground/80 whitespace-pre-wrap max-h-64 overflow-y-auto">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Quick preview (extracted content)</p>
+                  <p className="text-sm text-foreground/80 whitespace-pre-wrap max-h-[50vh] overflow-y-auto">
                     {loading
                       ? 'Loading preview...'
-                      : (analysis?.summary || 'Preview not available for this file type. Use "Ask about this document" to explore its contents.')}
+                      : (analysis?.extractedTextPreview || analysis?.summary || 'Preview not available for this file type. Use "Ask about this document" to explore its contents, or click "Open Original" above to view the real file.')}
                   </p>
                 </div>
               )}
@@ -279,7 +410,9 @@ export default function DocumentWorkspace({ document, onBack }: DocumentWorkspac
               {document.category === 'research_paper' && renderResearchPaperAnalysis()}
               {document.category === 'invoice' && renderInvoiceAnalysis()}
               {document.category === 'image' && renderImageAnalysis()}
-              {!['resume', 'assignment', 'document', 'research_paper', 'invoice', 'image'].includes(document.category) && (
+              {document.category === 'presentation' && renderPresentationAnalysis()}
+              {document.category === 'certificate' && renderCertificateAnalysis()}
+              {!['resume', 'assignment', 'document', 'research_paper', 'invoice', 'image', 'presentation', 'certificate'].includes(document.category) && (
                 renderSection('Summary', analysis?.summary)
               )}
               

@@ -17,6 +17,10 @@ app.use(helmet({
       'frame-ancestors': ["'self'", 'http://localhost:3000', 'http://127.0.0.1:3000'],
     },
   },
+  // Default 'same-origin' silently blocks the frontend (port 3000) from
+  // rendering an <img>/<iframe> pointed at this API (port 3001) - the
+  // request succeeds but the browser refuses to display the result.
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 app.use(cors({
   origin: [
