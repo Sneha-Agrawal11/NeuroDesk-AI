@@ -11,14 +11,27 @@ class MLAnalyzer:
     """
 
     @staticmethod
-    def classify_document(text: str, file_name: str) -> Dict[str, Any]:
-        """Classify document type using heuristics/ML."""
+    def classify_document(text: str, file_name: str, current_category: str = "document") -> Dict[str, Any]:
+        """
+        Classify document type using heuristics/ML.
+
+        `current_category` is the category already derived from the file
+        extension upstream (image, presentation, spreadsheet, code, etc).
+        That's a reliable signal we should never discard - this function's
+        job is only to refine the ambiguous "generic document" bucket
+        (resume vs research paper vs certificate vs plain document), not to
+        re-guess categories it has no real signal for.
+        """
+        RELIABLE_EXTENSION_CATEGORIES = {"image", "presentation", "spreadsheet", "code"}
+        if current_category in RELIABLE_EXTENSION_CATEGORIES:
+            return {"category": current_category, "confidence": 1.0}
+
         name_lower = file_name.lower()
         text_lower = text.lower()
-        
-        category = "document"
+
+        category = current_category or "document"
         confidence = 0.5
-        
+
         if "resume" in name_lower or "cv" in name_lower or "experience" in text_lower[:500]:
             category = "resume"
             confidence = 0.8
@@ -31,7 +44,7 @@ class MLAnalyzer:
         elif any(name_lower.endswith(ext) for ext in ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs']):
             category = "code"
             confidence = 0.9
-            
+
         return {"category": category, "confidence": confidence}
 
     @staticmethod

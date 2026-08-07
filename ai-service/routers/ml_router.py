@@ -10,6 +10,7 @@ router = APIRouter(prefix="/internal/ml", tags=["ml"])
 class ClassifyDocRequest(BaseModel):
     file_name: str
     content: str
+    current_category: str = "document"
 
 class ProjectHealthRequest(BaseModel):
     files: List[Dict[str, Any]]
@@ -20,7 +21,7 @@ class DuplicateHashRequest(BaseModel):
 @router.post("/classify")
 async def classify_document(req: ClassifyDocRequest):
     try:
-        result = MLAnalyzer.classify_document(req.content, req.file_name)
+        result = MLAnalyzer.classify_document(req.content, req.file_name, req.current_category)
         return {"success": True, "classification": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -59,6 +60,8 @@ async def deep_analyze_document(req: DeepAnalyzeRequest):
             "research_paper": "Extract from this research paper as pure JSON object: {\"abstract\": \"\", \"problemStatement\": \"\", \"methodology\": \"\", \"keywords\": [\"\"], \"results\": \"\", \"limitations\": \"\", \"futureWork\": \"\", \"citation\": \"\"}",
             "invoice": "Extract from this invoice as pure JSON object: {\"summary\": \"\", \"vendor\": \"\", \"date\": \"\", \"amount\": \"\", \"tax\": \"\", \"paymentStatus\": \"\", \"items\": [\"\"]}",
             "image": "Describe this image content as pure JSON object: {\"sceneDescription\": \"\", \"visualTags\": [\"\"], \"detectedObjects\": [\"\"], \"colours\": [\"\"], \"faces\": \"\", \"ocrText\": \"\"}",
+            "presentation": "Extract from this presentation as pure JSON object: {\"slideSummary\": \"\", \"importantTopics\": [\"\"], \"keyPoints\": [\"\"]}",
+            "certificate": "Extract from this certificate as pure JSON object: {\"issuer\": \"\", \"candidate\": \"\", \"completionDate\": \"\", \"summary\": \"\", \"details\": [\"\"]}",
             "project": "Analyze this project as pure JSON object: {\"architecture\": \"\", \"techStack\": [\"\"], \"folderStructure\": \"\", \"frontend\": \"\", \"backend\": \"\", \"database\": \"\", \"authentication\": \"\", \"apis\": [\"\"], \"routes\": [\"\"], \"mlModels\": [\"\"], \"configuration\": \"\", \"environment\": \"\", \"securityIssues\": [\"\"], \"performanceIssues\": [\"\"], \"missingFiles\": [\"\"], \"readme\": \"\", \"resumePoints\": [\"\"], \"interviewQuestions\": [\"\"], \"improvementSuggestions\": [\"\"], \"healthScore\": 90}"
         }
 

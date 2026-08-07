@@ -1,4 +1,5 @@
 import os
+import asyncio
 import pytesseract
 from PIL import Image
 import docx
@@ -9,6 +10,8 @@ from parsers.base import FileParser
 from providers.gemini_provider import GeminiProvider
 
 class MultimodalParser(FileParser):
+    _tesseract_path_logged = False
+
     def __init__(self):
         super().__init__()
         # Try to find tesseract on common windows paths if not in PATH
@@ -16,12 +19,21 @@ class MultimodalParser(FileParser):
             common_paths = [
                 r'C:\Program Files\Tesseract-OCR\tesseract.exe',
                 r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-                r'C:\Users\sneha\AppData\Local\Tesseract-OCR\tesseract.exe'
+                os.path.expandvars(r'%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe'),
+                os.path.expandvars(r'%USERPROFILE%\AppData\Local\Tesseract-OCR\tesseract.exe'),
             ]
+            found = None
             for p in common_paths:
                 if os.path.exists(p):
                     pytesseract.pytesseract.tesseract_cmd = p
+                    found = p
                     break
+            if not MultimodalParser._tesseract_path_logged:
+                if found:
+                    print(f"[MultimodalParser] Tesseract found at: {found}")
+                else:
+                    print(f"[MultimodalParser] Tesseract NOT found in any known path. Checked: {common_paths}")
+                MultimodalParser._tesseract_path_logged = True
 
     def parse(self, file_path: str) -> str:
         ext = file_path.lower().split('.')[-1]
@@ -54,41 +66,43 @@ class MultimodalParser(FileParser):
             ocr_text = pytesseract.image_to_string(img).strip()
             if ocr_text:
                 text += f"OCR Text:\n{ocr_text}\n\n"
+            else:
+                print(f"[MultimodalParser] OCR ran but found no text in {os.path.basename(file_path)}")
         except Exception as e:
-            text += f"[OCR Error: {str(e)}]\n"
-            
+            print(f"[MultimodalParser] OCR failed for {os.path.basename(file_path)}: {type(e).__name__}: {e}")
+            text += f"[OCR Error: {type(e).__name__}: {str(e)}]\n"
+
         try:
             gemini = GeminiProvider()
             if gemini.is_available():
-                import google.generativeai as genai
                 from PIL import Image as PILImage
-                
-                # Setup gemini vision call natively if possible, or just upload
-                # Actually, the python google-generativeai supports passing PIL images directly
-                model = gemini.client.aio.models if hasattr(gemini.client, 'aio') else None
-                if model:
-                    import asyncio
-                    async def get_desc():
-                        pil_img = PILImage.open(file_path)
-                        response = await model.generate_content(
-                            model="gemini-2.5-flash", 
-                            contents=["Describe this image in extreme detail, including objects, colors, text, people, setting, clothing, and overall scene. List visually descriptive keywords.", pil_img]
-                        )
-                        return response.text
-                    
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # We can't await easily in a sync function without a bit of work if loop is running
-                            import nest_asyncio
-                            nest_asyncio.apply()
-                        desc = asyncio.run(get_desc())
-                        text += f"Scene Description:\n{desc}\n"
-                    except:
-                        pass
+
+                async def get_desc():
+                    pil_img = PILImage.open(file_path)
+                    response = await gemini.client.aio.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=[
+                            "Describe this image in extreme detail, including objects, colors, "
+                            "text, people, setting, clothing, and overall scene. List visually "
+                            "descriptive keywords.",
+                            pil_img,
+                        ],
+                    )
+                    return response.text
+
+                # NOTE: this runs inside a thread-pool worker thread (called from a sync
+                # parse() via run_in_threadpool), which has NO running event loop of its
+                # own. asyncio.run() creates a fresh one here - that's correct and safe.
+                # (The previous version called asyncio.get_event_loop() first, which
+                # raises RuntimeError in a thread with no loop, and that error was
+                # swallowed by a bare `except: pass`, so this call never actually ran.)
+                desc = asyncio.run(get_desc())
+                if desc:
+                    text += f"Scene Description:\n{desc.strip()}\n"
         except Exception as e:
+            print(f"[MultimodalParser] Vision/scene-description failed for {os.path.basename(file_path)}: {e}")
             text += f"[Vision Error: {str(e)}]"
-            
+
         return text
 
     def _parse_pdf(self, file_path: str) -> str:
