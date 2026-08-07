@@ -59,32 +59,50 @@ export const removeFileFromFts = async (fileId: string) => {
   }
 };
 
+// Words that describe a file FORMAT/TYPE rather than actual content. When a
+// user says "resume pdf" or "infosys template ppt", the word "pdf"/"ppt" will
+// never literally appear inside a .pptx's extracted text - so requiring it as
+// an FTS content term (AND-ed with the real keywords) made the whole query
+// fail to match the file the user actually wanted. These are extracted out
+// and used as a ranking/category signal instead (see search.controller.ts).
+const FORMAT_STOPWORDS = new Set([
+  'pdf', 'ppt', 'pptx', 'ppts', 'doc', 'docx', 'docs', 'xls', 'xlsx', 'csv',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'md',
+]);
+
 export const searchFts = async (query: string, limit: number = 20) => {
   try {
     await ensureFtsReady();
 
-    // Strip common stop-words so "find my resume pdf" becomes ["resume", "pdf"]
+    // Strip common stop-words so "find my resume pdf" becomes ["resume"]
     const stopWords = new Set(['find', 'my', 'get', 'show', 'me', 'the', 'a', 'an', 'for', 'search', 'where', 'is', 'document', 'file', 'files', 'all', 'of', 'in', 'to']);
     const terms = (query.match(/[\p{L}\p{N}_-]+/gu) || [])
-      .filter(t => !stopWords.has(t.toLowerCase()) && t.length > 1);
+      .filter(t => !stopWords.has(t.toLowerCase()) && !FORMAT_STOPWORDS.has(t.toLowerCase()) && t.length > 1);
     if (!terms.length) return [];
 
-    // Use AND logic: ALL terms must appear (as prefix matches) in the row.
-    // This prevents "resume OR pdf" from returning every PDF in the workspace.
-    const safeQuery = terms.map(term => `"${term.replace(/"/g, '')}"*`).join(' AND ');
+    // Use AND logic first (all real content terms must appear), but fall
+    // back to OR if that's too strict and returns nothing - a partial match
+    // ranked lower is far more useful than zero results.
+    const buildQuery = (op: 'AND' | 'OR') =>
+      terms.map(term => `"${term.replace(/"/g, '')}"*`).join(` ${op} `);
 
     // BM25 column weights: file_id(0), filename(10), content(1), category(5)
     // Filename matches are weighted 10x higher than content matches so a file
     // literally named "resume" outranks one that merely mentions the word.
-    const results = await prisma.$queryRawUnsafe<any[]>(
+    const runQuery = async (matchQuery: string) => prisma.$queryRawUnsafe<any[]>(
       `SELECT file_id, filename, category,
               snippet(file_search, 2, '<b>', '</b>', '...', 30) AS snippet,
               bm25(file_search, 0.0, 10.0, 1.0, 5.0) AS rank
        FROM file_search
        WHERE file_search MATCH ?
        ORDER BY rank LIMIT ?`,
-      safeQuery, limit
+      matchQuery, limit
     );
+
+    let results = await runQuery(buildQuery('AND'));
+    if (!results.length && terms.length > 1) {
+      results = await runQuery(buildQuery('OR'));
+    }
 
     return results;
   } catch (error) {

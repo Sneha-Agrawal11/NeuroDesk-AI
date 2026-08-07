@@ -13,6 +13,8 @@ router.get('/projects', WorkspaceController.listProjects);
 router.get('/documents', WorkspaceController.listDocuments);
 router.get('/document/:id/analysis', WorkspaceController.getDocumentAnalysis);
 router.get('/document/:id/file', WorkspaceController.serveDocumentFile);
+router.post('/document/:id/open', WorkspaceController.openDocumentNative);
+router.post('/reindex-category', WorkspaceController.reindexByCategory);
 router.get('/project/:id/analysis', WorkspaceController.getProjectAnalysis);
 router.post('/upload', workspaceUpload.array('files', 200), WorkspaceController.uploadFiles);
 router.delete('/upload/pending/:pendingId', WorkspaceController.cancelPendingUpload);

@@ -29,7 +29,8 @@ export const processMlJob = async (job: any) => {
     try {
       const classRes = await axios.post(`${AI_SERVICE_URL}/internal/ml/classify`, {
         file_name: fileRecord.filename,
-        content: textContent.substring(0, 5000) // Classify based on first 5K chars
+        content: textContent.substring(0, 5000), // Classify based on first 5K chars
+        current_category: fileRecord.category || 'document'
       });
       
       if (classRes.data.success) {
