@@ -4,14 +4,14 @@ from typing import AsyncGenerator, Dict, Any, List, Optional
 from google import genai
 from google.genai import types
 from providers.base import AIProvider
-
+ 
 class GeminiProvider(AIProvider):
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
         print(f"GEMINI_API_KEY loaded at runtime: {bool(self.api_key)}")
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
         self.default_model = os.getenv("AI_DEFAULT_MODEL", "gemini-2.0-flash")
-
+ 
     async def chat(self, messages: List[Dict[str, str]], options: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
         model_name = options.get("model", self.default_model) if options else self.default_model
         print(f"Selected provider: Gemini, Model: {model_name}")
@@ -22,7 +22,7 @@ class GeminiProvider(AIProvider):
             
         history = []
         system_instruction = None
-
+ 
         for msg in messages[:-1]:
             if msg["role"] == "system":
                 system_instruction = msg["content"]
@@ -55,7 +55,7 @@ class GeminiProvider(AIProvider):
             traceback.print_exc()
             print("========================")
             raise
-
+ 
     async def summarize(self, text: str, max_length: int = 500) -> str:
         prompt = f"Summarize the following text in under {max_length} characters:\n\n{text}"
         response = await self.client.aio.models.generate_content(
@@ -63,18 +63,23 @@ class GeminiProvider(AIProvider):
             contents=prompt
         )
         return response.text
-
+ 
     async def generate(self, prompt: str, options: Optional[Dict[str, Any]] = None) -> str:
         model_name = options.get("model", self.default_model) if options else self.default_model
+        config_kwargs = {}
+        if options and options.get("max_output_tokens"):
+            config_kwargs["max_output_tokens"] = options["max_output_tokens"]
+        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
         response = await self.client.aio.models.generate_content(
             model=model_name,
-            contents=prompt
+            contents=prompt,
+            config=config
         )
-        return response.text
-
+        return response.text or ""
+ 
     def get_name(self) -> str:
         return "gemini"
-
+ 
     def is_available(self) -> bool:
         return bool(self.api_key)
-
+ 
