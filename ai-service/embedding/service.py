@@ -3,17 +3,29 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import logging
-
+ 
 logger = logging.getLogger(__name__)
-
+ 
 class EmbeddingService:
     def __init__(self):
         self.model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         self.persist_dir = os.getenv("CHROMA_PERSIST_DIR", "../data/chromadb")
         
         logger.info(f"Loading embedding model: {self.model_name}")
-        # Initialize the local embedding model
-        self.model = SentenceTransformer(self.model_name, device="cpu")
+        # Initialize the local embedding model.
+        # NOTE: newer transformers/accelerate versions can lazily initialize
+        # the model on a 'meta' device (no real data) and then fail when
+        # moved to cpu with ".to()" - meta tensors need `to_empty()`, not
+        # `.to()`. Disabling low_cpu_mem_usage forces normal eager loading,
+        # which avoids the meta-device path entirely. Fall back to the plain
+        # call for older sentence-transformers versions that reject this kwarg.
+        try:
+            self.model = SentenceTransformer(
+                self.model_name, device="cpu",
+                model_kwargs={"low_cpu_mem_usage": False}
+            )
+        except TypeError:
+            self.model = SentenceTransformer(self.model_name, device="cpu")
         print("Embedding model loaded successfully on CPU.")
         
         # Initialize ChromaDB client
@@ -25,7 +37,7 @@ class EmbeddingService:
             metadata={"hnsw:space": "cosine"}
         )
         logger.info("Embedding service initialized")
-
+ 
     def generate_embedding(self, text: str) -> list[float]:
         """Generate a single embedding for text."""
         return self.model.encode(text).tolist()
@@ -34,7 +46,7 @@ class EmbeddingService:
         """Generate embeddings for a batch of texts."""
         embeddings = self.model.encode(texts)
         return [emb.tolist() for emb in embeddings]
-
+ 
     def store_chunks(self, file_id: str, chunks: list[dict]):
         """Store text chunks and their embeddings in ChromaDB."""
         if not chunks:
@@ -64,7 +76,7 @@ class EmbeddingService:
         )
         
         return ids
-
+ 
     def search(self, query: str, limit: int = 10, filters: dict = None) -> list[dict]:
         """Search ChromaDB using semantic similarity."""
         query_embedding = self.generate_embedding(query)
@@ -90,16 +102,17 @@ class EmbeddingService:
             })
             
         return formatted_results
-
+ 
     def delete_file(self, file_id: str):
         """Remove every vector owned by a file when it is deleted or reindexed."""
         self.collection.delete(where={"file_id": file_id})
-
+ 
 # Singleton instance
 embedding_service = None
-
+ 
 def get_embedding_service() -> EmbeddingService:
     global embedding_service
     if embedding_service is None:
         embedding_service = EmbeddingService()
     return embedding_service
+ 
