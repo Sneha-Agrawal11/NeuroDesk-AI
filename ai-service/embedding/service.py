@@ -16,16 +16,27 @@ class EmbeddingService:
         # NOTE: newer transformers/accelerate versions can lazily initialize
         # the model on a 'meta' device (no real data) and then fail when
         # moved to cpu with ".to()" - meta tensors need `to_empty()`, not
-        # `.to()`. Disabling low_cpu_mem_usage forces normal eager loading,
-        # which avoids the meta-device path entirely. Fall back to the plain
-        # call for older sentence-transformers versions that reject this kwarg.
-        try:
-            self.model = SentenceTransformer(
-                self.model_name, device="cpu",
-                model_kwargs={"low_cpu_mem_usage": False}
-            )
-        except TypeError:
-            self.model = SentenceTransformer(self.model_name, device="cpu")
+        # `.to()`. This happens even with low_cpu_mem_usage=False on some
+        # transformers/accelerate version combos, purely because accelerate
+        # is installed and defaults to an "auto" device_map internally -
+        # explicitly forcing device_map=None disables that path entirely.
+        model_kwargs_attempts = [
+            {"low_cpu_mem_usage": False, "device_map": None},
+            {"low_cpu_mem_usage": False},
+            {},
+        ]
+        self.model = None
+        last_err = None
+        for kwargs in model_kwargs_attempts:
+            try:
+                self.model = SentenceTransformer(self.model_name, device="cpu", model_kwargs=kwargs) if kwargs \
+                    else SentenceTransformer(self.model_name, device="cpu")
+                break
+            except (TypeError, NotImplementedError) as e:
+                last_err = e
+                continue
+        if self.model is None:
+            raise RuntimeError(f"Failed to load embedding model after all fallback attempts: {last_err}")
         print("Embedding model loaded successfully on CPU.")
         
         # Initialize ChromaDB client
